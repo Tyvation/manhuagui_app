@@ -16,7 +16,7 @@ The Manhuagui App is a simple implementation that brings the features of the Man
 ## Installation
 
 1. Download the APK file:
-   - [Download APK](manhuagui_app\build\app\outputs\flutter-apk\app-release.apk)
+   - [Download APK](https://github.com/Tyvation/manhuagui_app/blob/main/app-release.apk)
 
 2. Open the downloaded APK file and install it. Make sure your device allows the installation of apps from unknown sources.
 
@@ -61,7 +61,7 @@ Manhuagui App 是將 漫畫櫃 網站功能帶入手機應用程式的簡單實�
 ## 安裝方法
 
 1. 下載 APK 檔案：
-   - [下載 APK](manhuagui_app\build\app\outputs\flutter-apk\app-release.apk)
+   - [下載 APK](https://github.com/Tyvation/manhuagui_app/blob/main/app-release.apk)
    
 2. 開啟下載的 APK 檔案並安裝，確保的裝置允許安裝來自未知來源的應用程式。
 
