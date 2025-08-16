@@ -38,6 +38,8 @@ dependencies:
   webview_flutter:
   shared_preferences:
   flutter_native_splash:
+  http: ^1.1.0
+  html: ^0.15.4
 
 dev_dependencies:
   flutter_test:
