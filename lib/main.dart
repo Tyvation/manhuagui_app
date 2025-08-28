@@ -815,13 +815,8 @@ class WebViewExampleState extends State<WebViewExample> {
     super.initState();
     setJsFiles();
     
-    // Load favorites cache
-    _loadFavoritesCache();
-    
-    // Check for new chapters on app launch (delayed to allow UI to load first)
-    Future.delayed(const Duration(seconds: 2), () {
-      checkAllFavoritesForNewChapters();
-    });
+    // Load favorites cache and then check for new chapters
+    _initializeFavoritesAndCheckChapters();
     _controller = WebViewController()
       ..canGoBack()..canGoForward()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -932,15 +927,43 @@ class WebViewExampleState extends State<WebViewExample> {
 
   Future<void> _loadFavoritesCache() async {
     final favorites = await getFavorites();
-    setState(() {
-      _cachedFavorites = favorites;
-      _cachedAvailableGenres = getAvailableGenres(favorites);
-      _favoritesLoaded = true;
-    });
+    if (mounted) {
+      setState(() {
+        _cachedFavorites = favorites;
+        _cachedAvailableGenres = getAvailableGenres(favorites);
+        _favoritesLoaded = true;
+      });
+    }
   }
   
   void _refreshFavoritesCache() {
     _loadFavoritesCache();
+  }
+
+  Future<void> _initializeFavoritesAndCheckChapters() async {
+    // First load favorites cache
+    await _loadFavoritesCache();
+    
+    // Then check for new chapters (with a small delay to let UI settle)
+    Future.delayed(const Duration(seconds: 1), () {
+      if (mounted && _cachedFavorites.isNotEmpty) {
+        checkAllFavoritesForNewChapters();
+      }
+    });
+  }
+
+  void _showTopNotification(String message) {
+    OverlayState? overlayState = Overlay.of(context);
+    late OverlayEntry overlayEntry;
+    
+    overlayEntry = OverlayEntry(
+      builder: (context) => _AnimatedTopNotification(
+        message: message,
+        onComplete: () => overlayEntry.remove(),
+      ),
+    );
+
+    overlayState?.insert(overlayEntry);
   }
 
   Widget _buildCategorySelector() {
@@ -1236,7 +1259,7 @@ class WebViewExampleState extends State<WebViewExample> {
                                       '${_newChapterCounts.length}',
                                       style: const TextStyle(
                                         color: Colors.white,
-                                        fontSize: 16,
+                                        fontSize: 14,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
@@ -1540,8 +1563,21 @@ class WebViewExampleState extends State<WebViewExample> {
                           });
                           print('🔄 Refresh button pressed!');
                           try {
-                            await updateFavoritesWithGenres();
+                            // Update genres and check for new chapters
+                            await Future.wait([
+                              updateFavoritesWithGenres(),
+                              checkAllFavoritesForNewChapters(),
+                            ]);
                             _refreshFavoritesCache();
+                            
+                            // Show success message as overlay
+                            if (mounted) {
+                              _showTopNotification(
+                                _newChapterCounts.isNotEmpty 
+                                  ? "已更新！發現 ${_newChapterCounts.length} 部漫畫有新章節"
+                                  : "已更新！所有漫畫都是最新的"
+                              );
+                            }
                           } finally {
                             setState(() {
                               _isRefreshingGenres = false;
@@ -1632,6 +1668,117 @@ class WebViewExampleState extends State<WebViewExample> {
             ),
         ],
       );
+  }
+}
+
+class _AnimatedTopNotification extends StatefulWidget {
+  final String message;
+  final VoidCallback onComplete;
+
+  const _AnimatedTopNotification({
+    required this.message,
+    required this.onComplete,
+  });
+
+  @override
+  State<_AnimatedTopNotification> createState() => _AnimatedTopNotificationState();
+}
+
+class _AnimatedTopNotificationState extends State<_AnimatedTopNotification>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _slideAnimation;
+  late Animation<double> _opacityAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, -1.0), // Start above screen
+      end: const Offset(0, 0), // End at normal position
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutBack,
+    ));
+
+    _opacityAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+    ));
+
+    // Start animation
+    _controller.forward();
+
+    // Auto-dismiss after 3 seconds
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) {
+        _controller.reverse().then((_) {
+          widget.onComplete();
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 10,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: SlideTransition(
+          position: _slideAnimation,
+          child: FadeTransition(
+            opacity: _opacityAnimation,
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  color: Colors.grey[800],
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: IntrinsicWidth(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        widget.message,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
