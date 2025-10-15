@@ -40,36 +40,6 @@ class AllowTapGestureRecognizer extends TapGestureRecognizer {
   }
 }
 
-class AllowHorizontalDragGestureRecognizer extends HorizontalDragGestureRecognizer {
-  int? _primaryPointer;
-
-  @override
-  void addAllowedPointer(PointerDownEvent event) {
-    if (_primaryPointer == null) {
-      _primaryPointer = event.pointer;
-      super.addAllowedPointer(event);
-    } else {
-      stopTrackingPointer(event.pointer);
-    }
-  }
-
-  @override
-  void didStopTrackingLastPointer(int pointer) {
-    if (_primaryPointer == pointer) {
-      _primaryPointer = null;
-    }
-    super.didStopTrackingLastPointer(pointer);
-  }
-
-  @override
-  void rejectGesture(int pointer) {
-    if (_primaryPointer == pointer) {
-      _primaryPointer = null;
-    }
-    acceptGesture(pointer);
-  }
-}
-
 class WebViewExample extends StatefulWidget {
   const WebViewExample({super.key});
   @override
@@ -94,57 +64,52 @@ class WebViewExampleState extends State<WebViewExample> {
   String currentComicChap = '';
   String currentPage = '';
   Map<String, int> _newChapterCounts = {};
-  String _selectedGenreFilter = "全部";
+  String _selectedGenreFilter = "?券";
   List<String> _cachedFavorites = [];
   List<String> _cachedAvailableGenres = [];
   bool _favoritesLoaded = false;
   bool _isRefreshingGenres = false;
-  bool _isRefreshingChapters = false;
-  double _horizontalDragOffset = 0;
-  bool _isHorizontalDragActive = false;
-  bool _isSwipeNavigating = false;
-  static const double _horizontalSwipeThreshold = 70.0;
 
   // Genre translation map from Simplified to Traditional Chinese
   static const Map<String, String> genreTranslationMap = {
-    '热血': '熱血',
-    '冒险': '冒險',
-    '魔幻': '魔幻',
-    '神鬼': '神鬼',
-    '搞笑': '搞笑',
-    '萌系': '萌系',
-    '爱情': '愛情',
-    '科幻': '科幻',
-    '魔法': '魔法',
-    '格斗': '格鬥',
-    '武侠': '武俠',
-    '机战': '機戰',
-    '战争': '戰爭',
-    '竞技': '競技',
-    '体育': '體育',
-    '校园': '校園',
-    '生活': '生活',
-    '励志': '勵志',
-    '历史': '歷史',
-    '伪娘': '偽娘',
-    '宅男': '宅男',
-    '腐女': '腐女',
-    '耽美': '耽美',
-    '百合': '百合',
-    '后宫': '後宮',
-    '治愈': '治癒',
-    '美食': '美食',
-    '推理': '推理',
-    '悬疑': '懸疑',
-    '恐怖': '恐怖',
-    '四格': '四格',
-    '职场': '職場',
-    '侦探': '偵探',
-    '社会': '社會',
-    '音乐': '音樂',
-    '舞蹈': '舞蹈',
-    '杂志': '雜誌',
-    '黑道': '黑道',
+    '?剛?': '?梯?',
+    '?': '?',
+    '擳劂': '擳劂',
+    '蟡狩': '蟡狩',
+    '??': '??',
+    '?頂': '?頂',
+    '?望?': '??',
+    '蝘劂': '蝘劂',
+    '擳?': '擳?',
+    '?潭?': '?潮洛',
+    '甇虫?': '甇虫?',
+    '?箸?': '璈',
+    '??': '?啁',
+    '蝡?': '蝡嗆?',
+    '雿': '擃',
+    '?∪': '?∪?',
+    '?暑': '?暑',
+    '?勗?': '?萄?',
+    '?': '甇瑕',
+    '隡芸?': '?賢?',
+    '摰': '摰',
+    '?戊': '?戊',
+    '?賜?': '?賜?',
+    '?曉?': '?曉?',
+    '?悍': '敺悅',
+    '瘝餅?': '瘝餌?',
+    '蝢?': '蝢?',
+    '?函?': '?函?',
+    '?祉?': '?貊?',
+    '??: '??,
+    '?': '?',
+    '?': '?瑕',
+    '靘行': '?菜',
+    '蝷曆?': '蝷暹?',
+    '?喃?': '?單?',
+    '??': '??',
+    '??': '??',
+    '暺?': '暺?',
   };
 
   Future<void> setJsFiles() async{
@@ -155,25 +120,12 @@ class WebViewExampleState extends State<WebViewExample> {
   Future<void> injectAdBlockingCSS() async {
     await _controller.runJavaScript('''
       (function() {
-        if (!window.__adBlockPreHideApplied) {
-          document.documentElement.classList.add('adblock-prehide');
-          window.__adBlockPreHideApplied = true;
-        }
-
-        if (!window.__adBlockPreHideReleaseScheduled) {
-          window.__adBlockPreHideReleaseScheduled = true;
-          setTimeout(function() {
-            document.documentElement.classList.remove('adblock-prehide');
-            window.__adBlockPreHideApplied = false;
-            window.__adBlockPreHideReleaseScheduled = false;
-          }, 2000);
-        }
-
-        var baseCss = `
+        // Create CSS rules to hide ads immediately
+        var css = `
           iframe,
           [id*="ad"],
           [class*="gg"],
-          [class*="HF"],
+          [class*="HF"], 
           [class*="sitemaji"],
           [class*="ads"],
           [href*="ad"],
@@ -192,26 +144,14 @@ class WebViewExampleState extends State<WebViewExample> {
             left: -9999px !important;
           }
         `;
-
-        var prehideCss = `
-          html.adblock-prehide body {
-            visibility: hidden !important;
-          }
-          html.adblock-prehide .manga-box,
-          html.adblock-prehide .manga-box * {
-            visibility: visible !important;
-          }
-        `;
-
-        var styleEl = document.getElementById('__adblockStyle');
-        if (!styleEl) {
-          styleEl = document.createElement('style');
-          styleEl.id = '__adblockStyle';
-          styleEl.type = 'text/css';
-          (document.head || document.documentElement).appendChild(styleEl);
-        }
-
-        styleEl.innerHTML = baseCss + prehideCss;
+        
+        // Inject CSS immediately
+        var style = document.createElement('style');
+        style.type = 'text/css';
+        style.innerHTML = css;
+        (document.head || document.documentElement).appendChild(style);
+        
+        console.log('?儭?Ad blocking CSS injected immediately');
       })();
     ''');
   }
@@ -240,7 +180,7 @@ class WebViewExampleState extends State<WebViewExample> {
         ''');
         
         if (result.toString() == 'false') {
-          print('⚠ Manga box not properly visible, retrying...');
+          print('??Manga box not properly visible, retrying...');
           await _controller.runJavaScript(_hideOtherAreaJS);
           
           // Final retry after another delay
@@ -252,7 +192,7 @@ class WebViewExampleState extends State<WebViewExample> {
                 document.querySelectorAll('body > *:not(.manga-box)').forEach(el => el.style.display = 'none');
                 mangaBox.style.display = 'block';
                 mangaBox.style.visibility = 'visible';
-                console.log('🔧 Emergency fallback applied');
+                console.log('? Emergency fallback applied');
               }
             ''');
           });
@@ -263,130 +203,15 @@ class WebViewExampleState extends State<WebViewExample> {
     });
   }
 
-  void _handleHorizontalDragStart(DragStartDetails details) {
-    _isHorizontalDragActive = true;
-    _horizontalDragOffset = 0;
-  }
-
-  void _handleHorizontalDragUpdate(DragUpdateDetails details) {
-    if (!_isHorizontalDragActive) {
-      return;
-    }
-    _horizontalDragOffset += details.delta.dx;
-  }
-
-  void _handleHorizontalDragEnd(DragEndDetails details) {
-    if (!_isHorizontalDragActive) {
-      return;
-    }
-    _isHorizontalDragActive = false;
-    final double delta = _horizontalDragOffset;
-    _horizontalDragOffset = 0;
-
-    if (delta.abs() < _horizontalSwipeThreshold) {
-      return;
-    }
-
-    final String url = currentUrl;
-    if (url.isEmpty || (!comicPattern.hasMatch(url) && !comicPattern1.hasMatch(url))) {
-      return;
-    }
-
-    final bool toNext = delta < 0;
-    _triggerSwipeNavigation(toNext: toNext);
-  }
-
-  void _handleHorizontalDragCancel() {
-    _isHorizontalDragActive = false;
-    _horizontalDragOffset = 0;
-  }
-
-  Future<void> _triggerSwipeNavigation({required bool toNext}) async {
-    if (_isSwipeNavigating) {
-      return;
-    }
-    final String url = currentUrl;
-    if (url.isEmpty || (!comicPattern.hasMatch(url) && !comicPattern1.hasMatch(url))) {
-      return;
-    }
-
-    _isSwipeNavigating = true;
-    final String direction = toNext ? 'next' : 'prev';
-    final String textHint = toNext ? '下' : '上';
-
-    int currentPageNumber = 1;
-    int totalPages = _totalPages;
-    final parts = currentPage.split('/');
-    if (parts.isNotEmpty) {
-      currentPageNumber = int.tryParse(parts[0]) ?? 1;
-      if (parts.length > 1) {
-        totalPages = int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ?? totalPages;
-      }
-    }
-
-    bool shouldShowChapterLoading = toNext
-        ? currentPageNumber >= totalPages
-        : currentPageNumber <= 1;
-
-    final String script = '''
-      (function() {
-        var selectors = ['#$direction', '.manga-panel-$direction', '.manga-panel-$direction.manga-panel-on', 'a[rel="$direction"]'];
-        for (var i = 0; i < selectors.length; i++) {
-          var el = document.querySelector(selectors[i]);
-          if (el) {
-            el.click();
-            return true;
-          }
-        }
-        var hint = /$textHint/;
-        var links = document.querySelectorAll('.manga-box a');
-        for (var j = 0; j < links.length; j++) {
-          var node = links[j];
-          if (!node) continue;
-          var text = node.textContent || '';
-          if (hint.test(text)) {
-            node.click();
-            return true;
-          }
-        }
-        return false;
-      })();
-    ''';
-
-    try {
-      final result = await _controller.runJavaScriptReturningResult(script);
-      if (result.toString() == 'true') {
-        if (shouldShowChapterLoading) {
-          loadingScreen(toNext ? 2 : 1, 2000);
-        }
-      } else {
-        print('Swipe navigation target not found for direction: $direction');
-      }
-    } catch (e) {
-      print('Swipe navigation error: $e');
-    } finally {
-      Future.delayed(const Duration(milliseconds: 400), () {
-        _isSwipeNavigating = false;
-      });
-    }
-  }
-
-  Future<Map<String, dynamic>> fetchChapterListInBackground(
-    String detailUrl, {
-    bool forceRefresh = false,
-  }) async {
+  Future<Map<String, dynamic>> fetchChapterListInBackground(String detailUrl) async {
     print("fetching: $detailUrl");
     
+    // Check cache first
     String comicId = extractComicIdFromUrl(detailUrl);
-    Map<String, dynamic>? cachedData = await getCachedChapterData(comicId);
-
-    if (!forceRefresh && cachedData != null) {
+    var cachedData = await getCachedChapterData(comicId);
+    if (cachedData != null) {
       print("Using cached data for comic $comicId");
       return cachedData;
-    }
-
-    if (forceRefresh) {
-      print("Force refreshing chapter data for comic $comicId");
     }
 
     try {
@@ -442,11 +267,11 @@ class WebViewExampleState extends State<WebViewExample> {
         return data;
       } else {
         print("Failed to fetch: ${response.statusCode}");
-        return cachedData ?? {'count': 0, 'chapters': [], 'comicId': comicId};
+        return {'count': 0, 'chapters': [], 'comicId': comicId};
       }
     } catch (e) {
       print('Error in background fetch: $e');
-      return cachedData ?? {'count': 0, 'chapters': [], 'comicId': comicId};
+      return {'count': 0, 'chapters': [], 'comicId': comicId};
     }
   }
 
@@ -482,7 +307,7 @@ class WebViewExampleState extends State<WebViewExample> {
 
   Future<String> extractComicGenres(String detailUrl) async {
     try {
-      print('🔍 Fetching genres from: $detailUrl');
+      print('?? Fetching genres from: $detailUrl');
       final response = await http.get(
         Uri.parse(detailUrl),
         headers: {
@@ -496,31 +321,31 @@ class WebViewExampleState extends State<WebViewExample> {
         final document = html_parser.parse(response.body);
         var genreList = <String>[];
         
-        print('📄 Page loaded, searching for genres...');
+        print('?? Page loaded, searching for genres...');
         
         // Try multiple approaches to find genres
         // Approach 1: Look for all dl elements
         var dlElements = document.querySelectorAll('dl');
-        print('🔎 Found ${dlElements.length} dl elements');
+        print('?? Found ${dlElements.length} dl elements');
         
         for (var dl in dlElements) {
           var dtElements = dl.querySelectorAll('dt');
           for (var dt in dtElements) {
-            print('📝 DT text: "${dt.text}"');
-            if (dt.text.contains('类别') || dt.text.contains('類別')) {
-              print('✅ Found genre section!');
+            print('?? DT text: "${dt.text}"');
+            if (dt.text.contains('蝐餃') || dt.text.contains('憿')) {
+              print('??Found genre section!');
               var dd = dt.nextElementSibling;
               if (dd != null && dd.localName == 'dd') {
-                print('📋 DD content: ${dd.outerHtml}');
+                print('?? DD content: ${dd.outerHtml}');
                 var genreLinks = dd.querySelectorAll('a');
-                print('🔗 Found ${genreLinks.length} genre links');
+                print('?? Found ${genreLinks.length} genre links');
                 for (var link in genreLinks) {
                   String genreName = link.attributes['title'] ?? link.text.trim();
-                  print('🏷️ Genre found: "$genreName"');
+                  print('?儭?Genre found: "$genreName"');
                   if (genreName.isNotEmpty) {
                     // Translate to Traditional Chinese if available
                     String translatedGenre = genreTranslationMap[genreName] ?? genreName;
-                    print('🌐 Translated to: "$translatedGenre"');
+                    print('?? Translated to: "$translatedGenre"');
                     genreList.add(translatedGenre);
                   }
                 }
@@ -533,21 +358,21 @@ class WebViewExampleState extends State<WebViewExample> {
         
         // Approach 2: Direct search for genre pattern
         if (genreList.isEmpty) {
-          print('🔍 Trying direct search for genre pattern...');
+          print('?? Trying direct search for genre pattern...');
           var genreText = response.body;
-          var genreRegex = RegExp(r'类别[：:][^<]*<dd[^>]*>(.*?)</dd>', multiLine: true);
+          var genreRegex = RegExp(r'蝐餃[嚗?][^<]*<dd[^>]*>(.*?)</dd>', multiLine: true);
           var match = genreRegex.firstMatch(genreText);
           if (match != null) {
-            print('📝 Found genre HTML: ${match.group(1)}');
+            print('?? Found genre HTML: ${match.group(1)}');
             var linkRegex = RegExp(r'<a[^>]*title="([^"]+)"[^>]*>([^<]+)</a>');
             var linkMatches = linkRegex.allMatches(match.group(1) ?? '');
             for (var linkMatch in linkMatches) {
               String genreName = linkMatch.group(1) ?? linkMatch.group(2) ?? '';
-              print('🏷️ Genre found via regex: "$genreName"');
+              print('?儭?Genre found via regex: "$genreName"');
               if (genreName.isNotEmpty) {
                 // Translate to Traditional Chinese if available
                 String translatedGenre = genreTranslationMap[genreName] ?? genreName;
-                print('🌐 Translated to: "$translatedGenre"');
+                print('?? Translated to: "$translatedGenre"');
                 genreList.add(translatedGenre);
               }
             }
@@ -555,20 +380,20 @@ class WebViewExampleState extends State<WebViewExample> {
         }
         
         String result = genreList.join(',');
-        print('🎯 Final genres: "$result"');
+        print('? Final genres: "$result"');
         return result;
       } else {
-        print('❌ HTTP Error: ${response.statusCode}');
+        print('??HTTP Error: ${response.statusCode}');
       }
     } catch (e) {
-      print('❌ Error extracting genres: $e');
+      print('??Error extracting genres: $e');
     }
     
     return '';
   }
 
   Future<void> checkAllFavoritesForNewChapters() async {
-    print("🔍 Checking favorites for new chapters...");
+    print("?? Checking favorites for new chapters...");
     
     List<String> favorites = await getFavorites();
     if (favorites.isEmpty) {
@@ -588,94 +413,13 @@ class WebViewExampleState extends State<WebViewExample> {
     // Run all checks in parallel for better performance
     await Future.wait(checkTasks);
     
-    if (!mounted) {
-      return;
-    }
-    
-    setState(() {});
-    
     // Update UI if new chapters found
     if (_newChapterCounts.isNotEmpty) {
+      setState(() {}); // Trigger UI rebuild to show notifications
       int totalNewChapters = _newChapterCounts.values.fold(0, (sum, count) => sum + count);
-      print("📚 Found $totalNewChapters new chapters across ${_newChapterCounts.length} comics!");
+      print("?? Found $totalNewChapters new chapters across ${_newChapterCounts.length} comics!");
     } else {
-      print("✅ All favorites are up to date");
-    }
-  }
-
-  Future<void> simulateNewChapterForFirstFavorite(BuildContext context) async {
-    try {
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      List<String> favorites = await getFavorites();
-
-      if (favorites.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('沒有收藏，無法模擬新章節')),
-          );
-        }
-        return;
-      }
-
-      String firstFavorite = favorites.first;
-      String comicId = RegExp(r'ID: (\w+)').firstMatch(firstFavorite)?.group(1) ?? '';
-
-      if (comicId.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未找到漫畫 ID，無法模擬')),
-          );
-        }
-        return;
-      }
-
-      String initialKey = 'initial_count_$comicId';
-      String? initialCountStr = prefs.getString(initialKey);
-      int? initialCount = initialCountStr != null ? int.tryParse(initialCountStr) : null;
-
-      if (initialCount != null && initialCount > 0) {
-        int adjustedInitial = math.max(0, initialCount - 1);
-        await prefs.setString(initialKey, adjustedInitial.toString());
-        print('Debug: baseline count for $comicId adjusted from $initialCount to $adjustedInitial');
-      }
-
-      String cacheKey = 'chapters_$comicId';
-      String? cachedJson = prefs.getString(cacheKey);
-      if (cachedJson != null) {
-        Map<String, dynamic> cachedData = jsonDecode(cachedJson) as Map<String, dynamic>;
-        int cachedCount = (cachedData['count'] as num?)?.toInt() ?? 0;
-        if (cachedCount > 0) {
-          int newCount = cachedCount - 1;
-          cachedData['count'] = newCount;
-
-          if (cachedData['chapters'] is List) {
-            List<dynamic> chapters = List<dynamic>.from(cachedData['chapters'] as List<dynamic>);
-            if (chapters.isNotEmpty) {
-              chapters.removeAt(0);
-              cachedData['chapters'] = chapters;
-            }
-          }
-
-          cachedData['timestamp'] = DateTime.now().millisecondsSinceEpoch;
-          await prefs.setString(cacheKey, jsonEncode(cachedData));
-          print('Debug: cached chapter count for $comicId adjusted from $cachedCount to $newCount');
-        }
-      }
-
-      await checkAllFavoritesForNewChapters();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已模擬 ${comicId} 減少 1 個章節')),
-        );
-      }
-    } catch (e) {
-      print('Debug simulate error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('模擬失敗：$e')),
-        );
-      }
+      print("??All favorites are up to date");
     }
   }
 
@@ -683,53 +427,31 @@ class WebViewExampleState extends State<WebViewExample> {
     try {
       SharedPreferences prefs = await SharedPreferences.getInstance();
       String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-
-      String baselineKey = 'initial_count_$comicId';
-      int baselineCount = int.tryParse(prefs.getString(baselineKey) ?? '') ?? 0;
-
-      if (baselineCount == 0) {
-        var storedProgress = await getStoredComicProgress(comicId);
-        baselineCount = (storedProgress['totalChapters'] as num?)?.toInt() ?? 0;
-      }
-
-      var currentData = await fetchChapterListInBackground(detailUrl, forceRefresh: true);
-      int currentCount = (currentData['count'] as num?)?.toInt() ?? 0;
-
-      if (currentCount == 0) {
-        print("⚠️ No chapters returned for comic $comicId, skipping comparison.");
+      
+      // Get the initial chapter count saved when user first favorited
+      String? initialCountStr = prefs.getString('initial_count_$comicId');
+      if (initialCountStr == null) {
+        print("?? No initial count found for comic $comicId, skipping...");
         return;
       }
-
-      if (baselineCount == 0) {
-        print("ℹ️ No baseline for comic $comicId. Storing current count $currentCount.");
-        await prefs.setString(baselineKey, currentCount.toString());
-
-        var initialProgress = await getStoredComicProgress(comicId);
-        initialProgress['totalChapters'] = currentCount;
-        initialProgress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
-        initialProgress['hasNewChapters'] = false;
-        await updateComicProgress(comicId, initialProgress);
-        _newChapterCounts.remove(comicId);
-        return;
-      }
-
-      int difference = currentCount - baselineCount;
-      String comicName = RegExp(r'漫畫: ([^,]+)').firstMatch(favorite)?.group(1) ?? 'Unknown';
-
-      if (difference > 0) {
-        _newChapterCounts[comicId] = difference;
-        print("🆕 $comicName has $difference new chapters! ($baselineCount → $currentCount)");
+      
+      int initialCount = int.tryParse(initialCountStr) ?? 0;
+      
+      // Fetch current chapter count
+      var currentData = await fetchChapterListInBackground(detailUrl);
+      int currentCount = currentData['count'] ?? 0;
+      
+      if (currentCount > initialCount) {
+        // There are new chapters since user favorited
+        int newChapters = currentCount - initialCount;
+        _newChapterCounts[comicId] = newChapters;
+        
+        String comicName = RegExp(r'瞍怎: ([^,]+)').firstMatch(favorite)?.group(1) ?? 'Unknown';
+        print("?? $comicName has $newChapters new chapters! ($initialCount ??$currentCount)");
       } else {
+        // No new chapters, remove from new list
         _newChapterCounts.remove(comicId);
-        await prefs.setString(baselineKey, currentCount.toString());
-        print("✅ $comicName is up to date. ($currentCount chapters)");
       }
-
-      var progress = await getStoredComicProgress(comicId);
-      progress['totalChapters'] = currentCount;
-      progress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
-      progress['hasNewChapters'] = difference > 0;
-      await updateComicProgress(comicId, progress);
     } catch (e) {
       print('Error checking comic $comicId: $e');
     }
@@ -757,11 +479,8 @@ class WebViewExampleState extends State<WebViewExample> {
     progress['lastWatchedChapter'] = chapterNumber;
     progress['hasNewChapters'] = false; // Clear new chapter flag when user reads
     await updateComicProgress(comicId, progress);
-
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    int totalChapters = (progress['totalChapters'] as num?)?.toInt() ?? chapterNumber;
-    await prefs.setString('initial_count_$comicId', totalChapters.toString());
     
+    // Remove from new chapters count
     setState(() {
       _newChapterCounts.remove(comicId);
     });
@@ -776,7 +495,7 @@ class WebViewExampleState extends State<WebViewExample> {
   }
 
   List<String> getAvailableGenres(List<String> favorites) {
-    Set<String> allGenres = {'全部'};
+    Set<String> allGenres = {'?券'};
     
     for (String favorite in favorites) {
       String genresStr = RegExp(r'Genres: ([^,]*(?:,[^,]*)*)').firstMatch(favorite)?.group(1) ?? '';
@@ -794,9 +513,9 @@ class WebViewExampleState extends State<WebViewExample> {
     }
     
     List<String> genreList = allGenres.toList();
-    genreList.remove('全部'); // Remove from current position
+    genreList.remove('?券'); // Remove from current position
     genreList.sort(); // Sort remaining genres
-    genreList.insert(0, '全部'); // Insert at beginning
+    genreList.insert(0, '?券'); // Insert at beginning
     return genreList;
   }
 
@@ -812,7 +531,7 @@ class WebViewExampleState extends State<WebViewExample> {
       if (!favorite.contains('Genres:')) {
         String comicId = RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
         if (comicId.isNotEmpty) {
-          print("🔄 Adding genres to existing favorite: $comicId");
+          print("?? Adding genres to existing favorite: $comicId");
           
           String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
           String genres = await extractComicGenres(detailUrl);
@@ -829,13 +548,13 @@ class WebViewExampleState extends State<WebViewExample> {
     
     if (hasUpdates) {
       await prefs.setStringList('favorites', favorites);
-      print("✅ Updated ${favorites.length} favorites with genres");
+      print("??Updated ${favorites.length} favorites with genres");
       setState(() {}); // Refresh UI
     }
   }
 
   List<String> filterFavoritesByGenre(List<String> favorites, String selectedGenre) {
-    if (selectedGenre == "全部") {
+    if (selectedGenre == "?券") {
       return favorites;
     }
     
@@ -880,7 +599,7 @@ class WebViewExampleState extends State<WebViewExample> {
               (cleanLatest.contains(cleanFavorite) || cleanFavorite.contains(cleanLatest) || cleanLatest == cleanFavorite);
           
           if (isAtLastChapter) {
-            print('🏁 User is at last chapter for $comicId, clearing new chapter flag');
+            print('?? User is at last chapter for $comicId, clearing new chapter flag');
             
             // Update progress to mark as caught up
             var progress = await getStoredComicProgress(comicId);
@@ -933,7 +652,7 @@ class WebViewExampleState extends State<WebViewExample> {
           String firstChapterTitle = firstChapter['title'] ?? '';
           
           // Extract comic name from title (detail page format)
-          int mangaIndex = title!.indexOf('漫画_');
+          int mangaIndex = title!.indexOf('瞍怎_');
           if (mangaIndex != -1) {
             comicName = title.substring(0, mangaIndex);
           } else {
@@ -943,7 +662,7 @@ class WebViewExampleState extends State<WebViewExample> {
           comicChapter = firstChapterTitle;
           finalUrl = firstChapterUrl;
         } else {
-          print("無法獲取章節列表");
+          print("?⊥??脣?蝡??”");
           return;
         }
       } else {
@@ -952,7 +671,7 @@ class WebViewExampleState extends State<WebViewExample> {
         comicId = match!.group(1)!;
         finalUrl = url;
         
-        int mangaIndex = title!.indexOf('漫画_');
+        int mangaIndex = title!.indexOf('瞍怎_');
         if (mangaIndex != -1) {
           comicName = title.substring(0, mangaIndex);
           comicChapter = "";
@@ -961,7 +680,7 @@ class WebViewExampleState extends State<WebViewExample> {
           if (lastUnderscoreIndex != -1) {
             comicName = title.substring(0, lastUnderscoreIndex);
             comicChapter = title.substring(lastUnderscoreIndex + 1);
-            comicChapter = comicChapter.replaceAll(' - 看漫画手机版', '');
+            comicChapter = comicChapter.replaceAll(' - ?憤?餅??箇?', '');
           } else {
             comicName = title;
             comicChapter = "";
@@ -976,10 +695,10 @@ class WebViewExampleState extends State<WebViewExample> {
       String genres = await extractComicGenres(detailUrl);
       
       String bCover = "https://cf.mhgui.com/cpic/g/$comicId.jpg";
-      String favoriteItem = '漫畫: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, Genres: $genres';
+      String favoriteItem = '瞍怎: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, Genres: $genres';
       saveFavorite(favoriteItem);
     } else {
-      print("當前不是漫畫頁面");
+      print("?嗅?銝瞍怎?");
     }
   }
 
@@ -1019,7 +738,7 @@ class WebViewExampleState extends State<WebViewExample> {
         favorites.add(favoriteItem);
         _addedToFavorite = true;
       });
-      print("已加入收藏清單");
+      print("撌脣??交????);
       await prefs.setStringList('favorites', favorites);
       _refreshFavoritesCache();
       
@@ -1033,7 +752,7 @@ class WebViewExampleState extends State<WebViewExample> {
         
         // Save the initial chapter count as baseline
         await prefs.setString('initial_count_$comicId', currentChapterCount.toString());
-        print("💾 Saved initial chapter count for comic $comicId: $currentChapterCount");
+        print("? Saved initial chapter count for comic $comicId: $currentChapterCount");
         
         // Clear any existing new chapter flags
         setState(() {
@@ -1064,16 +783,6 @@ class WebViewExampleState extends State<WebViewExample> {
       favorites[index] = favoriteItem;
     });
     await prefs.setStringList('favorites', favorites);
-
-    String? comicId = RegExp(r'ID: (\w*)').firstMatch(favoriteItem)?.group(1);
-    if (comicId != null && comicId.isNotEmpty) {
-      var chapterData = await fetchChapterListInBackground('https://m.manhuagui.com/comic/$comicId/', forceRefresh: true);
-      int currentChapterCount = chapterData['count'] ?? 0;
-
-      await prefs.setString('initial_count_$comicId', currentChapterCount.toString());
-      _newChapterCounts.remove(comicId);
-    }
-
     _refreshFavoritesCache();
   }
 
@@ -1114,11 +823,11 @@ class WebViewExampleState extends State<WebViewExample> {
       ..clearCache()
       ..setOnJavaScriptAlertDialog((request) async{
         print(request.message);
-        if(request.message == "没有上一章了" || request.message == "没有下一章了"){
+        if(request.message == "瘝⊥?銝?蝡?" || request.message == "瘝⊥?銝?蝡?"){
           setState((){
             _isLoadingChapter = 0;
             _showNoChapterDialog = true;
-            _isLastChapter = request.message == "没有下一章了" ? true : false;
+            _isLastChapter = request.message == "瘝⊥?銝?蝡?" ? true : false;
           });
           Future.delayed(const Duration(seconds: 2),(){setState(() => _showNoChapterDialog = false);});
         }
@@ -1185,9 +894,9 @@ class WebViewExampleState extends State<WebViewExample> {
           setState((){
             if (title != null) {
               
-              int mangaIndex = title.indexOf('漫画_');
+              int mangaIndex = title.indexOf('瞍怎_');
               if (mangaIndex != -1) {
-                // Main page format - remove "漫画_" and everything after it
+                // Main page format - remove "瞍怎_" and everything after it
                 currentComic = title.substring(0, mangaIndex);
                 currentComicChap = "";
               } else {
@@ -1196,8 +905,8 @@ class WebViewExampleState extends State<WebViewExample> {
                 if (lastUnderscoreIndex != -1) {
                   currentComic = title.substring(0, lastUnderscoreIndex);
                   currentComicChap = title.substring(lastUnderscoreIndex + 1);
-                  // Remove " - 看漫画手机版" from chapter if present
-                  currentComicChap = currentComicChap.replaceAll(' - 看漫画手机版', '');
+                  // Remove " - ?憤?餅??箇?" from chapter if present
+                  currentComicChap = currentComicChap.replaceAll(' - ?憤?餅??箇?', '');
                 } else {
                   // Fallback if no underscore found
                   currentComic = title;
@@ -1327,7 +1036,7 @@ class WebViewExampleState extends State<WebViewExample> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      "選擇分類",
+                      "?豢???",
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 18,
@@ -1414,11 +1123,8 @@ class WebViewExampleState extends State<WebViewExample> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async{
         if (await _controller.canGoBack()) {
-          _controller.goBack(); // 返回上一頁
-          return; // 攔截返回鍵事件
-        }
-        SystemNavigator.pop(); // 如果無法返回上一頁，允許返回鍵退出程式
-      },
+          _controller.goBack(); // 餈?銝???          return; // ?餈??萎?隞?        }
+        SystemNavigator.pop(); // 憒??⊥?餈?銝????迂餈??菟?箇?撘?      },
       child: Scaffold(
         backgroundColor: Colors.black45,
         onDrawerChanged: (isOpened) {
@@ -1436,7 +1142,7 @@ class WebViewExampleState extends State<WebViewExample> {
                       //height: 60,
                       child: Center(
                         child: Text(
-                          '我的書櫃', 
+                          '???豢?', 
                           style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)
                         )
                       )
@@ -1457,19 +1163,6 @@ class WebViewExampleState extends State<WebViewExample> {
                         icon: const Icon(Icons.home, color: Colors.white, size: 35),
                       ),
                     ),
-                    if (kDebugMode) ...[
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: IconButton(
-                          onPressed: () async {
-                            await simulateNewChapterForFirstFavorite(context);
-                          },
-                          icon: const Icon(Icons.bug_report, color: Colors.white, size: 30),
-                          tooltip: '模擬新章節',
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               );
@@ -1496,17 +1189,6 @@ class WebViewExampleState extends State<WebViewExample> {
                   )
                 )
                 ..add(
-                  Factory<AllowHorizontalDragGestureRecognizer>(() {
-                    final recognizer = AllowHorizontalDragGestureRecognizer();
-                    recognizer.onStart = _handleHorizontalDragStart;
-                    recognizer.onUpdate = _handleHorizontalDragUpdate;
-                    recognizer.onEnd = _handleHorizontalDragEnd;
-                    recognizer.onCancel = _handleHorizontalDragCancel;
-                    recognizer.minFlingDistance = _horizontalSwipeThreshold;
-                    return recognizer;
-                  })
-                )
-                ..add(
                   Factory<AllowTapGestureRecognizer>(() =>
                     AllowTapGestureRecognizer()
                     ..onTap = () async{
@@ -1520,15 +1202,8 @@ class WebViewExampleState extends State<WebViewExample> {
                           int? cPage = int.tryParse(p.toString());
                           //print('Previous Page: $pPage, Current Page: $cPage, Last Page: $lPage');
 
-                          if (cPage == null) {
-                            return;
-                          }
-
-                          if (cPage == 1 && pPage == 1) {
-                            await _triggerSwipeNavigation(toNext: false);
-                          } else if (pPage == lPage && cPage == pPage) {
-                            await _triggerSwipeNavigation(toNext: true);
-                          }
+                          if(cPage==1 && pPage==1){loadingScreen(1, 2000);} //! Previous Chapter
+                          else if(pPage==lPage && cPage==pPage){loadingScreen(2, 2000);} //! Next Chapter
                         });
                       }
                       setState((){
@@ -1543,8 +1218,7 @@ class WebViewExampleState extends State<WebViewExample> {
             //! AppBar
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
-              top: _scrollingDown ? 0 : -100, // 隱藏時移動到螢幕外
-              left: 0,
+              top: _scrollingDown ? 0 : -100, // ?梯??宏??Ｗ?憭?              left: 0,
               right: 0,
               child: Container(
                 width: 1000,
@@ -1665,7 +1339,7 @@ class WebViewExampleState extends State<WebViewExample> {
                     color: Colors.blue[400]
                   ),
                   child: Text(
-                    _isLastChapter ? "已經是最後一章了" : "這才第一章而已", 
+                    _isLastChapter ? "撌脩??舀?敺?蝡?" : "??蝚砌?蝡歇", 
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       color: Colors.white
@@ -1712,7 +1386,7 @@ class WebViewExampleState extends State<WebViewExample> {
                           child: FittedBox(
                             fit: BoxFit.contain,
                             child: Text(
-                              "第 ${index+1} 頁", 
+                              "蝚?${index+1} ??, 
                               style: const TextStyle(color: Colors.black),
                               textAlign: TextAlign.center,
                             ),
@@ -1807,7 +1481,7 @@ class WebViewExampleState extends State<WebViewExample> {
                 alignment: Alignment.center,
                 color: Colors.black.withOpacity(0.4),
                 child: Text(
-                  _isLoadingChapter==1 ? "正在載入上一章" : "正在載入下一章",
+                  _isLoadingChapter==1 ? "甇?頛銝?蝡? : "甇?頛銝?蝡?,
                   style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
@@ -1828,12 +1502,12 @@ class WebViewExampleState extends State<WebViewExample> {
     }
     
     if (_cachedFavorites.isEmpty) {
-      return const Center(child: Text("沒有收藏的漫畫😢", style: TextStyle(color: Colors.white)));
+      return const Center(child: Text("瘝??嗉??憤?恫??, style: TextStyle(color: Colors.white)));
     }
     
     List<String> filteredFavorites = filterFavoritesByGenre(_cachedFavorites, _selectedGenreFilter);
     
-    print('📊 Debug info:');
+    print('?? Debug info:');
     print('  Total favorites: ${_cachedFavorites.length}');
     print('  Available genres: $_cachedAvailableGenres');
     print('  First favorite sample: ${_cachedFavorites.isNotEmpty ? _cachedFavorites.first : "none"}');
@@ -1857,42 +1531,13 @@ class WebViewExampleState extends State<WebViewExample> {
                 child: Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.all(10),
+                      padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: Colors.orange.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.orange.withOpacity(0.3)),
                       ),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: _isRefreshingGenres ? null : () async {
-                          setState(() {
-                            _isRefreshingGenres = true;
-                          });
-                          print('🗂️ Category sync pressed!');
-                          try {
-                            await updateFavoritesWithGenres();
-                            _refreshFavoritesCache();
-                            if (mounted) {
-                              _showTopNotification("已更新分類資訊");
-                            }
-                          } finally {
-                            setState(() {
-                              _isRefreshingGenres = false;
-                            });
-                          }
-                        },
-                        child: _isRefreshingGenres
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
-                              ),
-                            )
-                          : const Icon(Icons.category_rounded, color: Colors.orange, size: 20),
-                      ),
+                      child: const Icon(Icons.category, color: Colors.orange, size: 22),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -1908,29 +1553,34 @@ class WebViewExampleState extends State<WebViewExample> {
                       ),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(8),
-                        onTap: _isRefreshingChapters ? null : () async {
+                        onTap: _isRefreshingGenres ? null : () async {
                           setState(() {
-                            _isRefreshingChapters = true;
+                            _isRefreshingGenres = true;
                           });
-                          print('🔄 Refresh button pressed!');
+                          print('?? Refresh button pressed!');
                           try {
-                            await checkAllFavoritesForNewChapters();
+                            // Update genres and check for new chapters
+                            await Future.wait([
+                              updateFavoritesWithGenres(),
+                              checkAllFavoritesForNewChapters(),
+                            ]);
                             _refreshFavoritesCache();
-
+                            
+                            // Show success message as overlay
                             if (mounted) {
                               _showTopNotification(
                                 _newChapterCounts.isNotEmpty 
-                                  ? "已更新！發現 ${_newChapterCounts.length} 部漫畫有新章節"
-                                  : "已更新！所有漫畫都是最新的"
+                                  ? "撌脫?堆??潛 ${_newChapterCounts.length} ?冽憤?急??啁?蝭"
+                                  : "撌脫?堆???憤?恍?舀??啁?"
                               );
                             }
                           } finally {
                             setState(() {
-                              _isRefreshingChapters = false;
+                              _isRefreshingGenres = false;
                             });
                           }
                         },
-                        child: _isRefreshingChapters 
+                        child: _isRefreshingGenres 
                           ? const SizedBox(
                               width: 20,
                               height: 20,
@@ -1988,23 +1638,21 @@ class WebViewExampleState extends State<WebViewExample> {
               ),
             ],
           ),
-          // Loading overlay for data refresh actions
-          if (_isRefreshingGenres || _isRefreshingChapters)
+          // Loading overlay when refreshing genres
+          if (_isRefreshingGenres)
             Container(
               color: Colors.black.withOpacity(0.5),
-              child: Center(
+              child: const Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        _isRefreshingGenres ? Colors.green : Colors.orange,
-                      ),
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
                     ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: 16),
                     Text(
-                      _isRefreshingGenres ? "更新分類中..." : "檢查收藏更新...",
-                      style: const TextStyle(
+                      "?湔??銝?..",
+                      style: TextStyle(
                         color: Colors.white,
                         fontSize: 16,
                         fontWeight: FontWeight.w500,
@@ -2237,7 +1885,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
 
   @override
   Widget build(BuildContext context) {
-    String favoriteName = RegExp(r'漫畫: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
+    String favoriteName = RegExp(r'瞍怎: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
     String favoriteChapter = RegExp(r'Chapter: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
     String favoritePage = RegExp(r'Page: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
     String favoriteCover = RegExp(r'Cover: (https?://[^\s]+)').firstMatch(widget.favorite)?.group(1) ?? "Unknow";
@@ -2294,11 +1942,11 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
                     Wrap(
                       children: [
                         const Text(
-                          '上次看到 ',
+                          '銝活? ',
                           style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70),
                         ),
                         Text(
-                          '$favoriteChapter 第$favoritePage頁',
+                          '$favoriteChapter 蝚?favoritePage??,
                           style: const TextStyle(fontSize: 11, color: Colors.white54),
                         )
                       ],
@@ -2340,7 +1988,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    '+$newCount 話',
+                    '+$newCount 閰?,
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
@@ -2360,7 +2008,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    '$remainingCount ↓',
+                    '$remainingCount ??,
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
