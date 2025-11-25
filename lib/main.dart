@@ -6,14 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'package:html/parser.dart' as html_parser;
+import 'dart:convert';
 import 'dart:math' as math;
-import 'package:manhuagui_app/managers/ad_blocker.dart';
-import 'package:manhuagui_app/managers/chapter_fetcher.dart';
-import 'package:manhuagui_app/managers/favorites_manager.dart';
-import 'package:manhuagui_app/widgets/animated_top_notification.dart';
-import 'package:manhuagui_app/widgets/favorite_list_item.dart';
 
-void main() {
+void main() { 
   runApp(const MyApp());
 }
 
@@ -22,21 +20,23 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const MaterialApp(
-        debugShowCheckedModeBanner: false, home: WebViewExample());
+      debugShowCheckedModeBanner: false,
+      home: WebViewExample()
+    );
   }
 }
 
 class AllowVerticalDragGestureRecognizer extends VerticalDragGestureRecognizer {
   @override
   void rejectGesture(int pointer) {
-    acceptGesture(pointer);
+    acceptGesture(pointer);  //override rejectGesture here
   }
 }
 
 class AllowTapGestureRecognizer extends TapGestureRecognizer {
   @override
   void rejectGesture(int pointer) {
-    acceptGesture(pointer);
+    acceptGesture(pointer);  //override rejectGesture here
   }
 }
 
@@ -78,10 +78,9 @@ class WebViewExample extends StatefulWidget {
 
 class WebViewExampleState extends State<WebViewExample> {
   late final WebViewController _controller;
-  final ScrollController _pageSelectorController = ScrollController();
-  final AdBlocker _adBlocker = AdBlocker();
-  final FavoritesManager _favoritesManager = FavoritesManager();
-
+  late final String _adblockerJS;
+  late final String _hideOtherAreaJS;
+  final ScrollController  _pageSelectorController = ScrollController();
   bool _scrollingDown = false;
   int? _canDeleteIndex;
   bool _addedToFavorite = false;
@@ -94,7 +93,10 @@ class WebViewExampleState extends State<WebViewExample> {
   String currentComic = '';
   String currentComicChap = '';
   String currentPage = '';
+  Map<String, int> _newChapterCounts = {};
   String _selectedGenreFilter = "全部";
+  List<String> _cachedFavorites = [];
+  List<String> _cachedAvailableGenres = [];
   bool _favoritesLoaded = false;
   bool _isRefreshingGenres = false;
   bool _isRefreshingChapters = false;
@@ -102,6 +104,7 @@ class WebViewExampleState extends State<WebViewExample> {
   bool _isHorizontalDragActive = false;
   bool _isSwipeNavigating = false;
   static const double _horizontalSwipeThreshold = 70.0;
+  static final DateTime _defaultLastRead = DateTime(2004, 7, 13);
 
   // Genre translation map from Simplified to Traditional Chinese
   static const Map<String, String> genreTranslationMap = {
@@ -601,6 +604,131 @@ class WebViewExampleState extends State<WebViewExample> {
     }
   }
 
+  String _formatLastRead(DateTime time) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${time.year}.${time.month}.${time.day} ${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
+  }
+
+  DateTime _parseLastReadValue(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return _defaultLastRead;
+    }
+
+    try {
+      List<String> parts = value.split(' ');
+      List<String> dateParts = parts.first.split('.');
+      int year = int.parse(dateParts[0]);
+      int month = dateParts.length > 1 ? int.parse(dateParts[1]) : 1;
+      int day = dateParts.length > 2 ? int.parse(dateParts[2]) : 1;
+
+      int hour = 0;
+      int minute = 0;
+      int second = 0;
+
+      if (parts.length > 1) {
+        List<String> timeParts = parts[1].split(':');
+        if (timeParts.isNotEmpty) {
+          hour = int.parse(timeParts[0]);
+        }
+        if (timeParts.length > 1) {
+          minute = int.parse(timeParts[1]);
+        }
+        if (timeParts.length > 2) {
+          second = int.parse(timeParts[2]);
+        }
+      }
+
+      return DateTime(year, month, day, hour, minute, second);
+    } catch (e) {
+      print('Error parsing LastRead value "$value": $e');
+      return _defaultLastRead;
+    }
+  }
+
+  String _ensureFavoriteHasLastRead(String favorite) {
+    final regex = RegExp(r'LastRead: ([^,]+)');
+    final match = regex.firstMatch(favorite);
+
+    if (match == null) {
+      final defaultString = _formatLastRead(_defaultLastRead);
+      if (favorite.contains(', Genres:')) {
+        return favorite.replaceFirst(', Genres:', ', LastRead: $defaultString, Genres:');
+      }
+      return '$favorite, LastRead: $defaultString';
+    }
+
+    final normalized = _formatLastRead(_parseLastReadValue(match.group(1)));
+    return favorite.replaceFirst(regex, 'LastRead: $normalized');
+  }
+
+  String _setFavoriteLastRead(String favorite, DateTime timestamp) {
+    final formatted = _formatLastRead(timestamp);
+    final regex = RegExp(r'LastRead: ([^,]+)');
+    if (regex.hasMatch(favorite)) {
+      return favorite.replaceFirst(regex, 'LastRead: $formatted');
+    }
+    if (favorite.contains(', Genres:')) {
+      return favorite.replaceFirst(', Genres:', ', LastRead: $formatted, Genres:');
+    }
+    return '$favorite, LastRead: $formatted';
+  }
+
+  DateTime _extractLastRead(String favorite) {
+    final match = RegExp(r'LastRead: ([^,]+)').firstMatch(favorite);
+    return _parseLastReadValue(match?.group(1));
+  }
+
+  Future<List<String>> _normalizeAndPersistFavorites(List<String> favorites, SharedPreferences prefs) async {
+    bool needsPersist = false;
+    final entries = <MapEntry<DateTime, String>>[];
+
+    for (final favorite in favorites) {
+      final normalized = _ensureFavoriteHasLastRead(favorite);
+      if (normalized != favorite) {
+        needsPersist = true;
+      }
+      entries.add(MapEntry(_extractLastRead(normalized), normalized));
+    }
+
+    entries.sort((a, b) => b.key.compareTo(a.key));
+    final sortedFavorites = entries.map((entry) => entry.value).toList();
+
+    if (!listEquals(sortedFavorites, favorites)) {
+      needsPersist = true;
+    }
+
+    if (needsPersist) {
+      await prefs.setStringList('favorites', sortedFavorites);
+    }
+
+    return sortedFavorites;
+  }
+
+  Future<void> _recordFavoriteVisit(String comicId, {DateTime? timestamp}) async {
+    if (comicId.isEmpty) {
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final favorites = prefs.getStringList('favorites') ?? [];
+    bool updated = false;
+    final visitTime = timestamp ?? DateTime.now();
+
+    for (int i = 0; i < favorites.length; i++) {
+      final currentId = RegExp(r'ID: (\w+)').firstMatch(favorites[i])?.group(1) ?? '';
+      if (currentId == comicId) {
+        favorites[i] = _setFavoriteLastRead(favorites[i], visitTime);
+        updated = true;
+        break;
+      }
+    }
+
+    if (updated) {
+      await _normalizeAndPersistFavorites(favorites, prefs);
+      await _loadFavoritesCache();
+    }
+  }
+
   Future<void> simulateNewChapterForFirstFavorite(BuildContext context) async {
     try {
       SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -677,6 +805,65 @@ class WebViewExampleState extends State<WebViewExample> {
     }
   }
 
+  Future<void> restoreNewChapterCountsFromStorage() async {
+    try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      List<String> favorites = await getFavorites();
+      Map<String, int> restoredCounts = {};
+
+      for (String favorite in favorites) {
+        String comicId = RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
+        if (comicId.isEmpty) {
+          continue;
+        }
+
+        String? progressJson = prefs.getString('progress_$comicId');
+        if (progressJson == null) {
+          continue;
+        }
+
+        Map<String, dynamic> progressData = jsonDecode(progressJson) as Map<String, dynamic>;
+        bool hasNew = progressData['hasNewChapters'] == true;
+        if (!hasNew) {
+          continue;
+        }
+
+        int baselineCount = int.tryParse(prefs.getString('initial_count_$comicId') ?? '') ?? 0;
+        int storedCount = (progressData['newChapterCount'] as num?)?.toInt() ?? 0;
+        int totalChapters = (progressData['totalChapters'] as num?)?.toInt() ?? 0;
+
+        int effectiveCount = storedCount;
+        if (effectiveCount <= 0 && baselineCount > 0 && totalChapters > baselineCount) {
+          effectiveCount = totalChapters - baselineCount;
+        }
+
+        if (effectiveCount > 0) {
+          restoredCounts[comicId] = effectiveCount;
+        }
+      }
+
+      if (mounted && restoredCounts.isNotEmpty) {
+        setState(() {
+          restoredCounts.forEach((key, value) {
+            _newChapterCounts[key] = value;
+          });
+        });
+      }
+    } catch (e) {
+      print('Error restoring new chapter counts: $e');
+    }
+  }
+
+  void _restoreStoredNewChapterState(String comicId, Map<String, dynamic> storedProgress, int baselineCount) {
+    if (storedProgress['hasNewChapters'] == true) {
+      int storedDifference = (storedProgress['newChapterCount'] as num?)?.toInt() ??
+          (((storedProgress['totalChapters'] as num?)?.toInt() ?? baselineCount) - baselineCount);
+      if (storedDifference > 0 && !_newChapterCounts.containsKey(comicId)) {
+        _newChapterCounts[comicId] = storedDifference;
+      }
+    }
+  }
+
   Future<void> checkSingleComicForNewChapters(String comicId, String favorite) async {
     try {
       SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -685,8 +872,8 @@ class WebViewExampleState extends State<WebViewExample> {
       String baselineKey = 'initial_count_$comicId';
       int baselineCount = int.tryParse(prefs.getString(baselineKey) ?? '') ?? 0;
 
+      var storedProgress = await getStoredComicProgress(comicId);
       if (baselineCount == 0) {
-        var storedProgress = await getStoredComicProgress(comicId);
         baselineCount = (storedProgress['totalChapters'] as num?)?.toInt() ?? 0;
       }
 
@@ -694,7 +881,8 @@ class WebViewExampleState extends State<WebViewExample> {
       int currentCount = (currentData['count'] as num?)?.toInt() ?? 0;
 
       if (currentCount == 0) {
-        print("⚠️ No chapters returned for comic $comicId, skipping comparison.");
+        print("Warn: No chapters returned for comic $comicId, keeping previous new chapter state.");
+        _restoreStoredNewChapterState(comicId, storedProgress, baselineCount);
         return;
       }
 
@@ -702,32 +890,40 @@ class WebViewExampleState extends State<WebViewExample> {
         print("ℹ️ No baseline for comic $comicId. Storing current count $currentCount.");
         await prefs.setString(baselineKey, currentCount.toString());
 
-        var initialProgress = await getStoredComicProgress(comicId);
-        initialProgress['totalChapters'] = currentCount;
-        initialProgress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
-        initialProgress['hasNewChapters'] = false;
-        await updateComicProgress(comicId, initialProgress);
+        storedProgress['totalChapters'] = currentCount;
+        storedProgress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
+        storedProgress['hasNewChapters'] = false;
+        storedProgress['newChapterCount'] = 0;
+        await updateComicProgress(comicId, storedProgress);
         _newChapterCounts.remove(comicId);
         return;
       }
 
       int difference = currentCount - baselineCount;
+      if (difference < 0) {
+        print("Warn: Current chapter count $currentCount is less than baseline $baselineCount for $comicId. Keeping previous new chapter state.");
+        _restoreStoredNewChapterState(comicId, storedProgress, baselineCount);
+        return;
+      }
+
       String comicName = RegExp(r'漫畫: ([^,]+)').firstMatch(favorite)?.group(1) ?? 'Unknown';
 
       if (difference > 0) {
         _newChapterCounts[comicId] = difference;
+        storedProgress['hasNewChapters'] = true;
+        storedProgress['newChapterCount'] = difference;
         print("🆕 $comicName has $difference new chapters! ($baselineCount → $currentCount)");
       } else {
         _newChapterCounts.remove(comicId);
         await prefs.setString(baselineKey, currentCount.toString());
+        storedProgress['hasNewChapters'] = false;
+        storedProgress['newChapterCount'] = 0;
         print("✅ $comicName is up to date. ($currentCount chapters)");
       }
 
-      var progress = await getStoredComicProgress(comicId);
-      progress['totalChapters'] = currentCount;
-      progress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
-      progress['hasNewChapters'] = difference > 0;
-      await updateComicProgress(comicId, progress);
+      storedProgress['totalChapters'] = currentCount;
+      storedProgress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
+      await updateComicProgress(comicId, storedProgress);
     } catch (e) {
       print('Error checking comic $comicId: $e');
     }
@@ -754,6 +950,7 @@ class WebViewExampleState extends State<WebViewExample> {
     var progress = await getStoredComicProgress(comicId);
     progress['lastWatchedChapter'] = chapterNumber;
     progress['hasNewChapters'] = false; // Clear new chapter flag when user reads
+    progress['newChapterCount'] = 0;
     await updateComicProgress(comicId, progress);
 
     SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -888,6 +1085,7 @@ class WebViewExampleState extends State<WebViewExample> {
               'lastWatchedChapter': totalChapters, // Mark as caught up
               'lastChecked': DateTime.now().millisecondsSinceEpoch,
               'hasNewChapters': false,
+              'newChapterCount': 0,
             });
             
             // Remove from new chapters count
@@ -904,38 +1102,40 @@ class WebViewExampleState extends State<WebViewExample> {
 
   RegExp comicPattern = RegExp(r'https://m\.manhuagui\.com/comic/(\d+)/(\d+)\.html');
   RegExp comicPattern1 = RegExp(r'^https://m\.manhuagui\.com/comic/(\d+)/$');
-
-  Future<void> addComicToFavorite() async {
+  Future<void> addComicToFavorite() async{
     String? url = await _controller.currentUrl();
-
-    if (url != null &&
-        (comicPattern.hasMatch(url) || comicPattern1.hasMatch(url))) {
+    
+    if(url != null && (comicPattern.hasMatch(url) || comicPattern1.hasMatch(url))){
       String? title = await _controller.getTitle();
       String comicName;
       String comicChapter;
       String comicId;
       String finalUrl;
       String comicPage = "1";
-
-      if (comicPattern1.hasMatch(url)) {
+      
+      if(comicPattern1.hasMatch(url)) {
+        // Comic detail page - get first chapter data and genres
         var match1 = comicPattern1.firstMatch(url);
         comicId = match1!.group(1)!;
-
-        var chapterData = await ChapterFetcher.fetchChapterList(url);
+        
+        // Get chapter list to find first chapter
+        var chapterData = await fetchChapterListInBackground(url);
         List<dynamic> chapters = chapterData['chapters'] ?? [];
-
-        if (chapters.isNotEmpty) {
+        
+        if(chapters.isNotEmpty) {
+          // Get first chapter (last in descending list)
           var firstChapter = chapters.last;
           String firstChapterUrl = firstChapter['url'] ?? '';
           String firstChapterTitle = firstChapter['title'] ?? '';
-
+          
+          // Extract comic name from title (detail page format)
           int mangaIndex = title!.indexOf('漫画_');
           if (mangaIndex != -1) {
             comicName = title.substring(0, mangaIndex);
           } else {
             comicName = title;
           }
-
+          
           comicChapter = firstChapterTitle;
           finalUrl = firstChapterUrl;
         } else {
@@ -943,10 +1143,11 @@ class WebViewExampleState extends State<WebViewExample> {
           return;
         }
       } else {
+        // Comic page - existing logic
         var match = comicPattern.firstMatch(url);
         comicId = match!.group(1)!;
         finalUrl = url;
-
+        
         int mangaIndex = title!.indexOf('漫画_');
         if (mangaIndex != -1) {
           comicName = title.substring(0, mangaIndex);
@@ -962,40 +1163,42 @@ class WebViewExampleState extends State<WebViewExample> {
             comicChapter = "";
           }
         }
-
+        
         comicPage = url.contains('=') ? url.split('=')[1] : "1";
       }
-
+      
+      // Extract genres from detail page
       String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-      String genres = await ChapterFetcher.extractComicGenres(detailUrl);
-
+      String genres = await extractComicGenres(detailUrl);
+      
       String bCover = "https://cf.mhgui.com/cpic/g/$comicId.jpg";
-      String lastRead =
-          "${DateTime.now().year}.${DateTime.now().month}.${DateTime.now().day} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')}";
-
-      String favoriteItem =
-          '漫畫: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, LastRead: $lastRead, Genres: $genres';
+      String lastRead = _formatLastRead(DateTime.now());
+      String favoriteItem = '漫畫: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, LastRead: $lastRead, Genres: $genres';
       saveFavorite(favoriteItem);
     } else {
       print("當前不是漫畫頁面");
     }
   }
 
-  Future<bool> checkComicInFavorite() async {
+  Future<bool> checkComicInFavorite() async{
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String> favorites = prefs.getStringList('favorites') ?? [];
     String? url = await _controller.currentUrl();
-    if (url != null &&
-        (comicPattern.hasMatch(url) || comicPattern1.hasMatch(url))) {
+    if(url != null && (comicPattern.hasMatch(url) || comicPattern1.hasMatch(url))){
       String comicId;
-
-      if (comicPattern1.hasMatch(url)) {
+      
+      if(comicPattern1.hasMatch(url)) {
+        // Detail page
         var match1 = comicPattern1.firstMatch(url);
         comicId = match1!.group(1)!;
       } else {
+        // Comic page
         var match = comicPattern.firstMatch(url);
         comicId = match!.group(1)!;
       }
-
-      return _favoritesManager.isFavorite(comicId);
+      
+      int index = favorites.indexWhere((item) => RegExp(r'ID: (\w*)').firstMatch(item)?.group(1) == comicId);
+      return index == -1 ? false : true;
     } else {
       return false;
     }
@@ -1015,7 +1218,8 @@ class WebViewExampleState extends State<WebViewExample> {
       });
       print("已加入收藏清單");
       await prefs.setStringList('favorites', favorites);
-      _refreshFavoritesCache();
+      await _normalizeAndPersistFavorites(favorites, prefs);
+      await _loadFavoritesCache();
       
       // Save initial chapter count when adding to favorites
       String comicId = RegExp(r'ID: (\w*)').firstMatch(favoriteItem)?.group(1) ?? '';
@@ -1023,11 +1227,18 @@ class WebViewExampleState extends State<WebViewExample> {
         // Get current chapter count and save it as baseline
         String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
         var chapterData = await fetchChapterListInBackground(detailUrl);
-        int currentChapterCount = chapterData['count'] ?? 0;
+        int currentChapterCount = (chapterData['count'] as num?)?.toInt() ?? 0;
         
         // Save the initial chapter count as baseline
         await prefs.setString('initial_count_$comicId', currentChapterCount.toString());
         print("💾 Saved initial chapter count for comic $comicId: $currentChapterCount");
+        var progress = await getStoredComicProgress(comicId);
+        progress['totalChapters'] = currentChapterCount;
+        progress['hasNewChapters'] = false;
+        progress['newChapterCount'] = 0;
+        progress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
+        await updateComicProgress(comicId, progress);
+
         
         // Clear any existing new chapter flags
         setState(() {
@@ -1058,141 +1269,151 @@ class WebViewExampleState extends State<WebViewExample> {
       favorites[index] = favoriteItem;
     });
     await prefs.setStringList('favorites', favorites);
+    await _normalizeAndPersistFavorites(favorites, prefs);
 
     String? comicId = RegExp(r'ID: (\w*)').firstMatch(favoriteItem)?.group(1);
     if (comicId != null && comicId.isNotEmpty) {
       var chapterData = await fetchChapterListInBackground('https://m.manhuagui.com/comic/$comicId/', forceRefresh: true);
-      int currentChapterCount = chapterData['count'] ?? 0;
+      int currentChapterCount = (chapterData['count'] as num?)?.toInt() ?? 0;
 
       await prefs.setString('initial_count_$comicId', currentChapterCount.toString());
+      var progress = await getStoredComicProgress(comicId);
+      progress['totalChapters'] = currentChapterCount;
+      progress['hasNewChapters'] = false;
+      progress['newChapterCount'] = 0;
+      progress['lastChecked'] = DateTime.now().millisecondsSinceEpoch;
+      await updateComicProgress(comicId, progress);
       _newChapterCounts.remove(comicId);
     }
 
-    _refreshFavoritesCache();
+    await _loadFavoritesCache();
   }
 
   Future<void> removeFavorite(String favoriteItem) async {
-    await _favoritesManager.removeFavorite(favoriteItem);
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String> favorites = prefs.getStringList('favorites') ?? [];
     setState(() {
+      favorites.remove(favoriteItem);
       _addedToFavorite = false;
     });
+    await prefs.setStringList('favorites', favorites);
+    await _normalizeAndPersistFavorites(favorites, prefs);
+    await _loadFavoritesCache();
   }
 
   Future<List<String>> getFavorites() async {
-    return _favoritesManager.cachedFavorites;
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String> favorites = prefs.getStringList('favorites') ?? [];
+    return _normalizeAndPersistFavorites(favorites, prefs);
   }
 
-  void loadingScreen(int loadingType, int delay) {
+  void loadingScreen(int loadingType,int delay){
     setState(() => _isLoadingChapter = loadingType);
-    Future.delayed(Duration(milliseconds: delay), () {
+    Future.delayed(Duration(milliseconds: delay), (){
       setState(() => _isLoadingChapter = 0);
-      if (loadingType == 2) _controller.clearCache();
+      if(loadingType==2) _controller.clearCache();
     });
   }
 
   @override
   void initState() {
     super.initState();
-    _adBlocker.loadJsFiles();
-    _favoritesManager.loadFavorites().then((_) {
-      if (mounted) {
-        setState(() {
-          _favoritesLoaded = true;
-        });
-        _favoritesManager.checkAllFavoritesForNewChapters().then((_) {
-          if (mounted) setState(() {});
-        });
-      }
-    });
+    setJsFiles();
+    
+    // Load favorites cache and then check for new chapters
+    _initializeFavoritesAndCheckChapters();
     _controller = WebViewController()
-      ..canGoBack()
-      ..canGoForward()
+      ..canGoBack()..canGoForward()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..clearCache()
-      ..setOnJavaScriptAlertDialog((request) async {
+      ..setOnJavaScriptAlertDialog((request) async{
         print(request.message);
-        if (request.message == "没有上一章了" || request.message == "没有下一章了") {
-          setState(() {
+        if(request.message == "没有上一章了" || request.message == "没有下一章了"){
+          setState((){
             _isLoadingChapter = 0;
             _showNoChapterDialog = true;
             _isLastChapter = request.message == "没有下一章了" ? true : false;
           });
-          Future.delayed(const Duration(seconds: 2), () {
-            setState(() => _showNoChapterDialog = false);
-          });
+          Future.delayed(const Duration(seconds: 2),(){setState(() => _showNoChapterDialog = false);});
         }
       })
       ..setNavigationDelegate(NavigationDelegate(
-        onUrlChange: (change) async {
+        onUrlChange: (change) async{
           String? url = await _controller.currentUrl();
           if (comicPattern.hasMatch(url!)) {
+            // Get page info but don't call showMangaBoxOnly here - timing issues
             Object? page = await _controller.runJavaScriptReturningResult('''
               document.querySelector('.manga-page').textContent;
-            ''');
+            '''); 
             setState(() {
               currentPage = page.toString().replaceAll(RegExp(r'["]'), '');
-              if (currentPage != '' && currentPage.split('/').length > 1)
-                _totalPages = int.tryParse(currentPage
-                        .split('/')[1]
-                        .replaceAll(RegExp(r'P'), '')) ??
-                    1;
+              if(currentPage != '' && currentPage.split('/').length>1) _totalPages = int.tryParse(currentPage.split('/')[1].replaceAll(RegExp(r'P'), '')) ?? 1;
             });
           }
-
+          
           setState(() {
-            currentUrl = url;
+            currentUrl = url; 
           });
+          //print('PageChanged ${change.url}');
         },
         onPageStarted: (url) {
           _isLoadingChapter = 0;
-          _adBlocker.injectAdBlockingCSS(_controller);
-          _adBlocker.hideAds(_controller);
+          
+          // Inject CSS rules immediately to prevent ads from showing
+          injectAdBlockingCSS();
+          
+          // Run JavaScript ad blocker immediately  
+          hideAds();
         },
         onPageFinished: (url) async {
-          String? title = await _controller.getTitle();
+          //print('onPageFinished : $url');
+          String? title = await _controller.getTitle(); 
           _addedToFavorite = await checkComicInFavorite();
-          if (_addedToFavorite) addComicToFavorite();
+          if(_addedToFavorite) addComicToFavorite();
 
-          _adBlocker.hideAds(_controller);
-
+          // Run follow-up ad cleanup to catch any ads that loaded after page start
+          hideAds();
+          
+          // Add delayed cleanup for late-loading ads
           Future.delayed(const Duration(milliseconds: 1000), () {
-            _adBlocker.hideAds(_controller);
+            hideAds();
           });
-
+          
           Future.delayed(const Duration(milliseconds: 3000), () {
-            _adBlocker.hideAds(_controller);
+            hideAds();
           });
 
           if (comicPattern.hasMatch(url)) {
-            _adBlocker.showMangaBoxOnly(_controller);
-
+            // Call showMangaBoxOnly after page is fully loaded
+            showMangaBoxOnly();
+            
             Object? page = await _controller.runJavaScriptReturningResult('''
               document.querySelector('.manga-page').textContent;
-            ''');
-
+            '''); 
+            
             setState(() {
               currentPage = page.toString().replaceAll(RegExp(r'["]'), '');
-              if (currentPage != '' && currentPage.split('/').length > 1)
-                _totalPages = int.tryParse(currentPage
-                        .split('/')[1]
-                        .replaceAll(RegExp(r'P'), '')) ??
-                    1;
+              if(currentPage != '' && currentPage.split('/').length>1) _totalPages = int.tryParse(currentPage.split('/')[1].replaceAll(RegExp(r'P'), '')) ?? 1;
             });
-          }
-          setState(() {
+          } 
+          setState((){
             if (title != null) {
+              
               int mangaIndex = title.indexOf('漫画_');
               if (mangaIndex != -1) {
+                // Main page format - remove "漫画_" and everything after it
                 currentComic = title.substring(0, mangaIndex);
                 currentComicChap = "";
               } else {
+                // Chapter page format - split by last underscore
                 int lastUnderscoreIndex = title.lastIndexOf('_');
                 if (lastUnderscoreIndex != -1) {
                   currentComic = title.substring(0, lastUnderscoreIndex);
                   currentComicChap = title.substring(lastUnderscoreIndex + 1);
-                  currentComicChap =
-                      currentComicChap.replaceAll(' - 看漫画手机版', '');
+                  // Remove " - 看漫画手机版" from chapter if present
+                  currentComicChap = currentComicChap.replaceAll(' - 看漫画手机版', '');
                 } else {
+                  // Fallback if no underscore found
                   currentComic = title;
                   currentComicChap = "";
                 }
@@ -1205,15 +1426,44 @@ class WebViewExampleState extends State<WebViewExample> {
           print(title);
         },
       ))
-      ..loadRequest(Uri.parse('https://manhuagui.com'));
+      ..loadRequest(Uri.parse('https://manhuagui.com')
+    );
+  }
+
+  Future<void> _loadFavoritesCache() async {
+    final favorites = await getFavorites();
+    if (mounted) {
+      setState(() {
+        _cachedFavorites = favorites;
+        _cachedAvailableGenres = getAvailableGenres(favorites);
+        _favoritesLoaded = true;
+      });
+    }
+  }
+  
+  void _refreshFavoritesCache() {
+    _loadFavoritesCache();
+  }
+
+  Future<void> _initializeFavoritesAndCheckChapters() async {
+    // First load favorites cache
+    await _loadFavoritesCache();
+    await restoreNewChapterCountsFromStorage();
+    
+    // Then check for new chapters (with a small delay to let UI settle)
+    Future.delayed(const Duration(seconds: 1), () {
+      if (mounted && _cachedFavorites.isNotEmpty) {
+        checkAllFavoritesForNewChapters();
+      }
+    });
   }
 
   void _showTopNotification(String message) {
     OverlayState? overlayState = Overlay.of(context);
     late OverlayEntry overlayEntry;
-
+    
     overlayEntry = OverlayEntry(
-      builder: (context) => AnimatedTopNotification(
+      builder: (context) => _AnimatedTopNotification(
         message: message,
         onComplete: () => overlayEntry.remove(),
       ),
@@ -1255,8 +1505,7 @@ class WebViewExampleState extends State<WebViewExample> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const Icon(Icons.filter_alt_rounded,
-                color: Colors.white70, size: 22),
+            const Icon(Icons.filter_alt_rounded, color: Colors.white70, size: 22),
           ],
         ),
       ),
@@ -1287,6 +1536,8 @@ class WebViewExampleState extends State<WebViewExample> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Header
+                
                 const Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -1298,23 +1549,23 @@ class WebViewExampleState extends State<WebViewExample> {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
+                    
                   ],
                 ),
                 const SizedBox(height: 12),
+                // Grid
                 Flexible(
                   child: GridView.builder(
                     shrinkWrap: true,
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: math.min(
-                          _favoritesManager.cachedAvailableGenres.length, 4),
+                      crossAxisCount: math.min(_cachedAvailableGenres.length, 4),
                       childAspectRatio: 2,
                       crossAxisSpacing: 8,
                       mainAxisSpacing: 8,
                     ),
-                    itemCount: _favoritesManager.cachedAvailableGenres.length,
+                    itemCount: _cachedAvailableGenres.length,
                     itemBuilder: (context, index) {
-                      String genre =
-                          _favoritesManager.cachedAvailableGenres[index];
+                      String genre = _cachedAvailableGenres[index];
                       bool isSelected = genre == _selectedGenreFilter;
                       return GestureDetector(
                         onTap: () {
@@ -1325,14 +1576,10 @@ class WebViewExampleState extends State<WebViewExample> {
                         },
                         child: Container(
                           decoration: BoxDecoration(
-                            color: isSelected
-                                ? Colors.orange.withOpacity(0.2)
-                                : Colors.grey[700],
+                            color: isSelected ? Colors.orange.withOpacity(0.2) : Colors.grey[700],
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
-                              color: isSelected
-                                  ? Colors.orange
-                                  : Colors.grey[600]!,
+                              color: isSelected ? Colors.orange : Colors.grey[600]!,
                               width: 1,
                             ),
                           ),
@@ -1342,11 +1589,9 @@ class WebViewExampleState extends State<WebViewExample> {
                               Container(
                                 width: 6,
                                 height: 6,
-                                margin:
-                                    const EdgeInsets.only(right: 0, left: 12),
+                                margin: const EdgeInsets.only(right: 0, left: 12),
                                 decoration: BoxDecoration(
-                                  color:
-                                      isSelected ? Colors.orange : Colors.blue,
+                                  color: isSelected ? Colors.orange : Colors.blue,
                                   shape: BoxShape.circle,
                                 ),
                               ),
@@ -1355,12 +1600,8 @@ class WebViewExampleState extends State<WebViewExample> {
                                   genre,
                                   style: TextStyle(
                                     fontSize: 13,
-                                    color: isSelected
-                                        ? Colors.orange
-                                        : Colors.white,
-                                    fontWeight: isSelected
-                                        ? FontWeight.w600
-                                        : FontWeight.normal,
+                                    color: isSelected ? Colors.orange : Colors.white,
+                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                                   ),
                                   textAlign: TextAlign.center,
                                   overflow: TextOverflow.ellipsis,
@@ -1381,33 +1622,33 @@ class WebViewExampleState extends State<WebViewExample> {
     );
   }
 
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, result) async {
+      onPopInvokedWithResult: (didPop, result) async{
         if (await _controller.canGoBack()) {
-          _controller.goBack();
-          return;
+          _controller.goBack(); // 返回上一頁
+          return; // 攔截返回鍵事件
         }
-        SystemNavigator.pop();
+        SystemNavigator.pop(); // 如果無法返回上一頁，允許返回鍵退出程式
       },
       child: Scaffold(
         backgroundColor: Colors.black45,
         onDrawerChanged: (isOpened) {
-          if (!isOpened) {
-            setState(() => _canDeleteIndex = null);
-          } else {
-            setState(() => _scrollingDown = false);
-          }
+          if(!isOpened) {setState(() => _canDeleteIndex = null);}
+          else { setState(() => _scrollingDown = false);}
         },
         drawer: Drawer(
           backgroundColor: Colors.blue[400],
-          child: Builder(builder: (context) {
-            return SafeArea(
-              child: Column(
-                children: [
-                  const SizedBox(
+          child: Builder(
+            builder: (context) {
+              return SafeArea(
+                child: Column(
+                  children: [
+                    const SizedBox(
+                      //height: 60,
                       child: Center(
                         child: Text(
                           '我的書櫃', 
@@ -1488,14 +1729,11 @@ class WebViewExampleState extends State<WebViewExample> {
                         int? pPage = int.tryParse(currentPage.split('/')[0]) ?? 1;
                         int? lPage = _totalPages;
 
-                              Future.delayed(const Duration(milliseconds: 50),
-                                  () async {
-                                String? u = await _controller.currentUrl();
-                                var p = RegExp(r"#p=(\d+)")
-                                        .firstMatch(u!)
-                                        ?.group(1) ??
-                                    1;
-                                int? cPage = int.tryParse(p.toString());
+                        Future.delayed(const Duration(milliseconds: 50), () async{
+                          String? u = await _controller.currentUrl();
+                          var p = RegExp(r"#p=(\d+)").firstMatch(u!)?.group(1) ?? 1;
+                          int? cPage = int.tryParse(p.toString());
+                          //print('Previous Page: $pPage, Current Page: $cPage, Last Page: $lPage');
 
                           if (cPage == null) {
                             return;
@@ -1520,124 +1758,114 @@ class WebViewExampleState extends State<WebViewExample> {
             //! AppBar
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
-              top: _scrollingDown ? 0 : -100,
+              top: _scrollingDown ? 0 : -100, // 隱藏時移動到螢幕外
               left: 0,
               right: 0,
               child: Container(
                 width: 1000,
                 decoration: const BoxDecoration(
-                    color: Colors.blue,
-                    borderRadius: BorderRadius.only(
-                        bottomLeft: Radius.circular(15),
-                        bottomRight: Radius.circular(15))),
-                padding:
-                    const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
+                  color: Colors.blue,
+                  borderRadius: BorderRadius.only(bottomLeft: Radius.circular(15), bottomRight: Radius.circular(15))
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
                 child: SafeArea(
-                  child: Builder(builder: (context) {
-                    return Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Stack(
-                          children: [
-                            IconButton(
-                              icon: const Icon(
-                                  Icons.collections_bookmark_rounded,
-                                  color: Colors.white,
-                                  size: 30),
-                              onPressed: () {
-                                Scaffold.of(context).openDrawer();
-                              },
-                            ),
-                            if (_favoritesManager.newChapterCounts.isNotEmpty)
-                              Positioned(
-                                right: 2,
-                                top: 0,
-                                child: Container(
-                                  padding: const EdgeInsets.all(2),
-                                  decoration: const BoxDecoration(
-                                    color: Colors.orange,
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: Text(
-                                    '${_favoritesManager.newChapterCounts.length}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
+                  child: Builder(
+                    builder: (context){
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Stack(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.collections_bookmark_rounded, color: Colors.white, size: 30),
+                                onPressed: () {
+                                  Scaffold.of(context).openDrawer();
+                                },
+                              ),
+                              if (_newChapterCounts.isNotEmpty)
+                                Positioned(
+                                  right: 2,
+                                  top: 0,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(2),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.orange,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Text(
+                                      '${_newChapterCounts.length}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                          ],
-                        ),
-                        Flexible(
-                          child: InkWell(
-                            onTap: () {
-                              String? url = currentUrl.replaceFirst(
-                                  RegExp(r'(?<=comic/\d+)/.*'), '');
-                              _controller.loadRequest(Uri.parse(url));
-                            },
-                            child: FittedBox(
-                              fit: BoxFit.fitHeight,
-                              child: Text(
-                                "$currentComic $currentComicChap",
-                                style: const TextStyle(
+                            ],
+                          ),
+                          Flexible(
+                            child: InkWell(
+                              onTap: (){
+                                String? url = currentUrl.replaceFirst(RegExp(r'(?<=comic/\d+)/.*'), '');
+                                _controller.loadRequest(Uri.parse(url));
+                                //print(url);
+                              },
+                              child: FittedBox(
+                                fit: BoxFit.fitHeight,
+                                child: Text(
+                                  "$currentComic $currentComicChap",
+                                  style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
-                                    overflow: TextOverflow.clip),
+                                    overflow: TextOverflow.clip
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        IconButton(
-                          icon: Icon(
-                              _addedToFavorite
-                                  ? Icons.bookmark_added
-                                  : Icons.bookmark_add_outlined,
-                              color: Colors.white,
-                              size: 30),
-                          onPressed: () async {
-                            if (_addedToFavorite) {
-                              String? url = currentUrl;
-                              if (url != null) {
-                                SharedPreferences prefs =
-                                    await SharedPreferences.getInstance();
-                                List<String> favorites =
-                                    prefs.getStringList('favorites') ?? [];
-                                String comicId;
-
-                                if (comicPattern1.hasMatch(url)) {
-                                  var match1 = comicPattern1.firstMatch(url);
-                                  comicId = match1!.group(1)!;
-                                } else if (comicPattern.hasMatch(url)) {
-                                  var match = comicPattern.firstMatch(url);
-                                  comicId = match!.group(1)!;
-                                } else {
-                                  print("URL doesn't match any pattern: $url");
-                                  return;
+                          IconButton(
+                            icon: Icon(
+                              _addedToFavorite ? Icons.bookmark_added : Icons.bookmark_add_outlined, 
+                              color: Colors.white, size: 30
+                            ),
+                            onPressed: () async{
+                              if(_addedToFavorite){
+                                String? url = currentUrl;
+                                if(url != null){
+                                  SharedPreferences prefs = await SharedPreferences.getInstance();
+                                  List<String> favorites = prefs.getStringList('favorites') ?? [];
+                                  String comicId;
+                                  
+                                  // Support both URL patterns
+                                  if(comicPattern1.hasMatch(url)) {
+                                    var match1 = comicPattern1.firstMatch(url);
+                                    comicId = match1!.group(1)!;
+                                  } else if(comicPattern.hasMatch(url)) {
+                                    var match = comicPattern.firstMatch(url);
+                                    comicId = match!.group(1)!;
+                                  } else {
+                                    print("URL doesn't match any pattern: $url");
+                                    return;
+                                  }
+                                  
+                                  var i = favorites.where((item) => RegExp(r'ID: (\w*)').firstMatch(item)?.group(1) == comicId);
+                                  removeFavorite(i.toString().replaceAll(RegExp(r'[()]'), ''));
                                 }
-
-                                var i = favorites.where((item) =>
-                                    RegExp(r'ID: (\w*)')
-                                        .firstMatch(item)
-                                        ?.group(1) ==
-                                    comicId);
-                                removeFavorite(i
-                                    .toString()
-                                    .replaceAll(RegExp(r'[()]'), ''));
+                              }else{
+                                await addComicToFavorite();
                               }
-                            } else {
-                              await addComicToFavorite();
-                            }
-                          },
-                        )
-                      ],
-                    );
-                  }),
+                            },
+                          )
+                        ],
+                      );
+                    }
+                  ),
                 ),
               ),
             ),
+            //! Alert Dialog
             AnimatedPositioned(
               top: _showNoChapterDialog ? 30 : -100,
               width: MediaQuery.of(context).size.width,
@@ -1645,159 +1873,164 @@ class WebViewExampleState extends State<WebViewExample> {
               child: SafeArea(
                 child: Container(
                   alignment: Alignment.center,
-                  margin: EdgeInsets.symmetric(
-                      horizontal: _isLastChapter ? 110 : 120),
+                  margin: EdgeInsets.symmetric(horizontal: _isLastChapter ? 110 : 120),
                   height: 30,
                   decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(15),
-                      color: Colors.blue[400]),
+                    borderRadius: BorderRadius.circular(15),
+                    color: Colors.blue[400]
+                  ),
                   child: Text(
-                    _isLastChapter ? "已經是最後一章了" : "這才第一章而已",
+                    _isLastChapter ? "已經是最後一章了" : "這才第一章而已", 
                     textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white),
+                    style: const TextStyle(
+                      color: Colors.white
+                    ),
                   ),
                 ),
-              ),
+              ), 
+            
             ),
+            //! PagePicker
             Positioned(
-                bottom: 25,
-                right: 0,
-                child: AnimatedContainer(
-                  decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(10),
-                          topRight: Radius.circular(10))),
-                  height: _listPageSelector ? 150 : 0,
-                  width: 60,
-                  duration: const Duration(milliseconds: 400),
-                  margin: const EdgeInsets.all(10),
-                  child: ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    controller: _pageSelectorController,
-                    itemCount: _totalPages,
-                    itemBuilder: (context, index) {
-                      return Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: () {
-                            setState(() => _listPageSelector = false);
-                            String url;
-                            if (currentUrl.contains('#p=')) {
-                              url = currentUrl.replaceAll(
-                                  RegExp(r"#p=(\d+)"), "#p=${index + 1}");
-                            } else {
-                              url = "$currentUrl#p=${index + 1}";
-                            }
-                            _controller.loadRequest(Uri.parse(url));
-                            if (_pageSelectorController.hasClients) {
-                              _pageSelectorController.jumpTo(0);
-                            }
-                          },
-                          splashColor: Colors.blue[200],
-                          child: Container(
-                              height: 30,
-                              alignment: Alignment.center,
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 5),
-                              child: FittedBox(
-                                fit: BoxFit.contain,
-                                child: Text(
-                                  "第 ${index + 1} 頁",
-                                  style: const TextStyle(color: Colors.black),
-                                  textAlign: TextAlign.center,
-                                ),
-                              )),
+            bottom: 25, right: 0,
+              child: AnimatedContainer(
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: const BorderRadius.only(topLeft: Radius.circular(10), topRight: Radius.circular(10))
+                ),
+                height: _listPageSelector ? 150 : 0, width: 60,
+                duration: const Duration(milliseconds: 400),
+                margin: const EdgeInsets.all(10),
+                child: ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  controller: _pageSelectorController,
+                  itemCount: _totalPages,
+                  itemBuilder: (context, index) {
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () {
+                          setState(() => _listPageSelector = false);
+                          String url;
+                          if (currentUrl.contains('#p=')) {url = currentUrl.replaceAll(RegExp(r"#p=(\d+)"), "#p=${index + 1}");}
+                          else {url = "$currentUrl#p=${index + 1}";}
+                          _controller.loadRequest(Uri.parse(url));
+                          if(_pageSelectorController.hasClients){
+                            _pageSelectorController.jumpTo(0);
+                          }
+                        },
+                        splashColor: Colors.blue[200],
+                        child: Container(
+                          height: 30, 
+                          alignment: Alignment.center,
+                          padding: const EdgeInsets.symmetric(horizontal: 5),
+                          child: FittedBox(
+                            fit: BoxFit.contain,
+                            child: Text(
+                              "第 ${index+1} 頁", 
+                              style: const TextStyle(color: Colors.black),
+                              textAlign: TextAlign.center,
+                            ),
+                          )
                         ),
-                      );
-                    },
-                  ),
-                )),
+                      ),
+                    );
+                  },
+                ),
+              )
+            ),
+            //! ChapterButton
             AnimatedPositioned(
-                bottom: 10,
-                right: _listPageSelector ? 80 : 8,
+              bottom: 10, right: _listPageSelector ? 80 : 8,
+              duration: const Duration(milliseconds: 300),
+              child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 300),
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 300),
-                  opacity: _listPageSelector ? 1 : 0,
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        height: 30,
-                        width: 30,
-                        child: IconButton(
-                            padding: EdgeInsets.zero,
-                            onPressed: () {
-                              _listPageSelector = false;
-                              _controller.runJavaScript('''
+                opacity: _listPageSelector ? 1 : 0,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      height: 30, width: 30,
+                      child: IconButton(
+
+                        padding: EdgeInsets.zero,
+                        onPressed: (){
+                          _listPageSelector = false;
+                          _controller.runJavaScript('''
                           var button = document.querySelector('a[data-action="chapter.prev"]');
                           if (button) {button.click();}
                         ''');
-                              loadingScreen(1, 2000);
-                            },
-                            style: IconButton.styleFrom(
-                                backgroundColor: Colors.grey[300]),
-                            icon: const Icon(
-                                Icons.keyboard_double_arrow_left_rounded)),
+                          loadingScreen(1, 2000);
+                        }, 
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.grey[300]
+                        ),
+                        icon: const Icon(Icons.keyboard_double_arrow_left_rounded)
                       ),
-                      const SizedBox(width: 5),
-                      SizedBox(
-                        height: 30,
-                        width: 30,
-                        child: IconButton(
-                            padding: EdgeInsets.zero,
-                            onPressed: () {
-                              _listPageSelector = false;
-                              _controller.runJavaScript('''
+                    ),
+                    const SizedBox(width: 5),
+                    SizedBox(
+                      height: 30, width: 30,
+                      child: IconButton(
+                        padding: EdgeInsets.zero,
+                        onPressed: (){
+                          _listPageSelector = false;
+                          _controller.runJavaScript('''
                             var button = document.querySelector('a[data-action="chapter.next"]');
                             if (button) {button.click();}
                           ''');
-                              loadingScreen(2, 2000);
-                            },
-                            style: IconButton.styleFrom(
-                                backgroundColor: Colors.grey[300]),
-                            icon: const Icon(
-                                Icons.keyboard_double_arrow_right_rounded)),
+                          loadingScreen(2, 2000);
+                        }, 
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.grey[300]
+                        ),
+                        icon: const Icon(Icons.keyboard_double_arrow_right_rounded)
                       ),
-                    ],
-                  ),
-                )),
+                    ),
+                  ],
+                ),
+              )
+            ),
+            //! PageButton
             Positioned(
-                bottom: 0,
-                right: 0,
-                child: comicPattern.hasMatch(currentUrl)
-                    ? InkWell(
-                        child: Container(
-                          margin: const EdgeInsets.all(10),
-                          height: 30,
-                          width: 60,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                              color: Colors.grey[400],
-                              borderRadius: BorderRadius.circular(10)),
-                          child: FittedBox(
-                              fit: BoxFit.contain, child: Text(currentPage)),
-                        ),
-                        onTap: () {
-                          setState(
-                              () => _listPageSelector = !_listPageSelector);
-                        },
-                      )
-                    : const SizedBox.shrink()),
+              bottom: 0, right: 0,
+              child: comicPattern.hasMatch(currentUrl)
+              ? InkWell(
+                child: Container(
+                  margin: const EdgeInsets.all(10),
+                  height: 30, width: 60,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[400],
+                    borderRadius: BorderRadius.circular(10)
+                  ),
+                  child: FittedBox(
+                    fit: BoxFit.contain, 
+                    child: Text(currentPage)
+                  ),
+                ),
+                onTap: () {
+                  setState(() => _listPageSelector = !_listPageSelector);
+                },
+              )
+              : const SizedBox.shrink()
+            ),
+            //! Loading Screen
             Positioned.fill(
-                child: _isLoadingChapter == 0
-                    ? const SizedBox.shrink()
-                    : Container(
-                        alignment: Alignment.center,
-                        color: Colors.black.withOpacity(0.4),
-                        child: Text(
-                          _isLoadingChapter == 1 ? "正在載入上一章" : "正在載入下一章",
-                          style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                        ),
-                      ))
+              child: _isLoadingChapter == 0
+              ? const SizedBox.shrink()
+              : Container(
+                alignment: Alignment.center,
+                color: Colors.black.withOpacity(0.4),
+                child: Text(
+                  _isLoadingChapter==1 ? "正在載入上一章" : "正在載入下一章",
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white
+                  ),
+                ),
+              )
+            )
           ],
         ),
       ),
@@ -1808,19 +2041,23 @@ class WebViewExampleState extends State<WebViewExample> {
     if (!_favoritesLoaded) {
       return const Center(child: CircularProgressIndicator());
     }
-
-    if (_favoritesManager.cachedFavorites.isEmpty) {
-      return const Center(
-          child: Text("沒有收藏的漫畫😢", style: TextStyle(color: Colors.white)));
+    
+    if (_cachedFavorites.isEmpty) {
+      return const Center(child: Text("沒有收藏的漫畫😢", style: TextStyle(color: Colors.white)));
     }
-
-    List<String> filteredFavorites = _favoritesManager.filterFavoritesByGenre(
-        _favoritesManager.cachedFavorites, _selectedGenreFilter);
-
+    
+    List<String> filteredFavorites = filterFavoritesByGenre(_cachedFavorites, _selectedGenreFilter);
+    
+    print('📊 Debug info:');
+    print('  Total favorites: ${_cachedFavorites.length}');
+    print('  Available genres: $_cachedAvailableGenres');
+    print('  First favorite sample: ${_cachedFavorites.isNotEmpty ? _cachedFavorites.first : "none"}');
+          
     return Stack(
       children: [
         Column(
           children: [
+            // Genre filter dropdown with update button
             Container(
                 padding: const EdgeInsets.all(12),
                 margin: const EdgeInsets.fromLTRB(10, 10, 10, 0),
@@ -1914,8 +2151,7 @@ class WebViewExampleState extends State<WebViewExample> {
                               height: 20,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                    Colors.orange),
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
                               ),
                             )
                           : const Icon(Icons.refresh, color: Colors.orange, size: 20),
@@ -1946,9 +2182,16 @@ class WebViewExampleState extends State<WebViewExample> {
                   setState(() => _addedToFavorite = false);
                 },
                 onTap: (favorite, comicId, hasNew, favoriteChapter) async {
+                  final navigator = Navigator.of(context);
+                  if (comicId.isNotEmpty) {
+                    await _recordFavoriteVisit(comicId);
+                  }
+                  if (!mounted) {
+                    return;
+                  }
                   String url = RegExp(r'URL: (https?://[^,]+)').firstMatch(favorite)!.group(1)!;
                   _controller.loadRequest(Uri.parse(url));
-                  Navigator.of(context).pop();
+                  navigator.pop();
                   setState(() => _scrollingDown = false);
                   
                   // Clear hasNew flag when user taps into the comic
@@ -1997,3 +2240,361 @@ class WebViewExampleState extends State<WebViewExample> {
       );
   }
 }
+
+class _AnimatedTopNotification extends StatefulWidget {
+  final String message;
+  final VoidCallback onComplete;
+
+  const _AnimatedTopNotification({
+    required this.message,
+    required this.onComplete,
+  });
+
+  @override
+  State<_AnimatedTopNotification> createState() => _AnimatedTopNotificationState();
+}
+
+class _AnimatedTopNotificationState extends State<_AnimatedTopNotification>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _slideAnimation;
+  late Animation<double> _opacityAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, -1.0), // Start above screen
+      end: const Offset(0, 0), // End at normal position
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutBack,
+    ));
+
+    _opacityAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+    ));
+
+    // Start animation
+    _controller.forward();
+
+    // Auto-dismiss after 3 seconds
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) {
+        _controller.reverse().then((_) {
+          widget.onComplete();
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 10,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: SlideTransition(
+          position: _slideAnimation,
+          child: FadeTransition(
+            opacity: _opacityAnimation,
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  color: Colors.grey[800],
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: IntrinsicWidth(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        widget.message,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class FavoriteListItem extends StatefulWidget {
+  final String favorite;
+  final int index;
+  final int? canDeleteIndex;
+  final Function(int) onLongPress;
+  final Function(String) onDelete;
+  final Function(String, String, bool, String) onTap;
+  final bool Function(String) hasNewChapters;
+  final int Function(String) getNewChapterCount;
+  final Future<Map<String, dynamic>> Function(String) getStoredComicProgress;
+
+  const FavoriteListItem({
+    super.key,
+    required this.favorite,
+    required this.index,
+    required this.canDeleteIndex,
+    required this.onLongPress,
+    required this.onDelete,
+    required this.onTap,
+    required this.hasNewChapters,
+    required this.getNewChapterCount,
+    required this.getStoredComicProgress,
+  });
+
+  @override
+  State<FavoriteListItem> createState() => _FavoriteListItemState();
+}
+
+class _FavoriteListItemState extends State<FavoriteListItem> {
+  bool wasUpToDate = false;
+  int remainingCount = 0;
+  bool showRemaining = false;
+  
+  @override
+  void initState() {
+    super.initState();
+    String comicId = RegExp(r'ID: (\w+)').firstMatch(widget.favorite)?.group(1) ?? '';
+    if (comicId.isNotEmpty) {
+      _checkWasUpToDate(comicId);
+    }
+  }
+  
+  Future<void> _checkWasUpToDate(String comicId) async {
+    try {
+      // Get cached chapter data
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      String? dataJson = prefs.getString('chapters_$comicId');
+      
+      if (dataJson != null) {
+        var chapterData = jsonDecode(dataJson) as Map<String, dynamic>;
+        List<dynamic> chapters = chapterData['chapters'] ?? [];
+        
+        if (chapters.isNotEmpty) {
+          // Get the latest chapter title (first in descending order list)
+          String latestChapterTitle = chapters.first['title'] ?? '';
+          
+          // Get the favoriteChapter (what user last watched)
+          String favoriteChapter = RegExp(r'Chapter: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? '';
+          
+          // Exact comparison - if user's chapter exactly matches latest chapter, show gray border
+          if (mounted && favoriteChapter.isNotEmpty && latestChapterTitle == favoriteChapter) {
+            setState(() {
+              wasUpToDate = true;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      print('Error checking if was up to date: $e');
+    }
+  }
+
+  Future<int> _calculateRemainingChapters(String comicId, String favoriteChapter) async {
+    try {
+      // Get cached chapter data
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      String? dataJson = prefs.getString('chapters_$comicId');
+      
+      if (dataJson != null) {
+        var chapterData = jsonDecode(dataJson) as Map<String, dynamic>;
+        List<dynamic> chapters = chapterData['chapters'] ?? [];
+        
+        if (chapters.isNotEmpty && favoriteChapter.isNotEmpty) {
+          // Find user's current chapter position in the list
+          int userPosition = -1;
+          for (int i = 0; i < chapters.length; i++) {
+            String chapterTitle = chapters[i]['title'] ?? '';
+            if (chapterTitle.contains(favoriteChapter)) {
+              userPosition = i;
+              break;
+            }
+          }
+          
+          // Calculate remaining chapters (chapters before user's position since list is descending)
+          if (userPosition > 0) {
+            return userPosition; // Number of chapters before current position
+          }
+        }
+      }
+    } catch (e) {
+      print('Error calculating remaining chapters: $e');
+    }
+    return 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    String favoriteName = RegExp(r'漫畫: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
+    String favoriteChapter = RegExp(r'Chapter: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
+    String favoritePage = RegExp(r'Page: ([^,]+)').firstMatch(widget.favorite)?.group(1) ?? "Undefine";
+    String favoriteCover = RegExp(r'Cover: (https?://[^\s]+)').firstMatch(widget.favorite)?.group(1) ?? "Unknow";
+    String comicId = RegExp(r'ID: (\w+)').firstMatch(widget.favorite)?.group(1) ?? '';
+    bool hasNew = widget.hasNewChapters(comicId);
+    int newCount = widget.getNewChapterCount(comicId);
+    
+    // Calculate remaining chapters if no new updates but not caught up
+    if (!hasNew && !wasUpToDate && !showRemaining) {
+      _calculateRemainingChapters(comicId, favoriteChapter).then((count) {
+        if (mounted && count > 0) {
+          setState(() {
+            remainingCount = count;
+            showRemaining = true;
+          });
+        }
+      });
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Material(
+        color: Colors.transparent,
+        child: Stack(
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              splashColor: Colors.blue[400],
+              onTap: () async {
+                await widget.onTap(widget.favorite, comicId, hasNew, favoriteChapter);
+              },
+              onLongPress: () {
+                widget.onLongPress(widget.index);
+              },
+              child: ListTile(
+                contentPadding: const EdgeInsets.only(left: 10, top: 5, bottom: 5, right: 0),
+                visualDensity: const VisualDensity(horizontal: 0, vertical: 2),
+
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  side: BorderSide(
+                    color: hasNew ? Colors.orange : (wasUpToDate ? Colors.grey : Colors.white), 
+                    width: hasNew ? 2.5 : 1.5
+                  )
+                ),
+
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      favoriteName, 
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, height: 1, color: Colors.white)
+                    ),
+                    Wrap(
+                      children: [
+                        const Text(
+                          '上次看到 ',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70),
+                        ),
+                        Text(
+                          '$favoriteChapter 第$favoritePage頁',
+                          style: const TextStyle(fontSize: 11, color: Colors.white54),
+                        )
+                      ],
+                    ),
+                  ],
+                ),
+
+                leading: favoriteCover != 'Unknow'
+                  ? Image.network(favoriteCover, fit: BoxFit.cover)
+                  : const Icon(Icons.error_outline),
+                
+                trailing: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 200),
+                  opacity: widget.canDeleteIndex == widget.index ? 1.0 : 0.0,
+                  child: AnimatedScale(
+                    duration: const Duration(milliseconds: 200),
+                    scale: widget.canDeleteIndex == widget.index ? 1.0 : 0.0,
+                    child: Transform.translate(
+                      offset: Offset(0, wasUpToDate ? 0 : -10), // Move 8 pixels upward
+                      child: IconButton(
+                        icon: Icon(Icons.delete_forever, color: Colors.red[400], size: 35),
+                        onPressed: widget.canDeleteIndex == widget.index ? () {
+                          widget.onDelete(widget.favorite);
+                        } : null,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (hasNew)
+              Positioned(
+                bottom: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '+$newCount 話',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            if (!hasNew && showRemaining && remainingCount > 0)
+              Positioned(
+                bottom: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.blue,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '$remainingCount ↓',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
