@@ -71,36 +71,6 @@ class AllowHorizontalDragGestureRecognizer
   }
 }
 
-class AllowHorizontalDragGestureRecognizer extends HorizontalDragGestureRecognizer {
-  int? _primaryPointer;
-
-  @override
-  void addAllowedPointer(PointerDownEvent event) {
-    if (_primaryPointer == null) {
-      _primaryPointer = event.pointer;
-      super.addAllowedPointer(event);
-    } else {
-      stopTrackingPointer(event.pointer);
-    }
-  }
-
-  @override
-  void didStopTrackingLastPointer(int pointer) {
-    if (_primaryPointer == pointer) {
-      _primaryPointer = null;
-    }
-    super.didStopTrackingLastPointer(pointer);
-  }
-
-  @override
-  void rejectGesture(int pointer) {
-    if (_primaryPointer == pointer) {
-      _primaryPointer = null;
-    }
-    acceptGesture(pointer);
-  }
-}
-
 class WebViewExample extends StatefulWidget {
   const WebViewExample({super.key});
   @override
@@ -128,554 +98,112 @@ class WebViewExampleState extends State<WebViewExample> {
   String _selectedGenreFilter = "全部";
   bool _favoritesLoaded = false;
   bool _isRefreshingGenres = false;
+  bool _isRefreshingChapters = false;
+  double _horizontalDragOffset = 0;
+  bool _isHorizontalDragActive = false;
+  bool _isSwipeNavigating = false;
+  static const double _horizontalSwipeThreshold = 70.0;
 
-  // Genre translation map from Simplified to Traditional Chinese
-  static const Map<String, String> genreTranslationMap = {
-    '热血': '熱血',
-    '冒险': '冒險',
-    '魔幻': '魔幻',
-    '神鬼': '神鬼',
-    '搞笑': '搞笑',
-    '萌系': '萌系',
-    '爱情': '愛情',
-    '科幻': '科幻',
-    '魔法': '魔法',
-    '格斗': '格鬥',
-    '武侠': '武俠',
-    '机战': '機戰',
-    '战争': '戰爭',
-    '竞技': '競技',
-    '体育': '體育',
-    '校园': '校園',
-    '生活': '生活',
-    '励志': '勵志',
-    '历史': '歷史',
-    '伪娘': '偽娘',
-    '宅男': '宅男',
-    '腐女': '腐女',
-    '耽美': '耽美',
-    '百合': '百合',
-    '后宫': '後宮',
-    '治愈': '治癒',
-    '美食': '美食',
-    '推理': '推理',
-    '悬疑': '懸疑',
-    '恐怖': '恐怖',
-    '四格': '四格',
-    '职场': '職場',
-    '侦探': '偵探',
-    '社会': '社會',
-    '音乐': '音樂',
-    '舞蹈': '舞蹈',
-    '杂志': '雜誌',
-    '黑道': '黑道',
-  };
-
-  Future<void> setJsFiles() async{
-    _adblockerJS = await rootBundle.loadString('lib/assets/adblocker.js');
-    _hideOtherAreaJS = await rootBundle.loadString('lib/assets/hideOtherArea.js');
-  }
-  
-  Future<void> injectAdBlockingCSS() async {
-    await _controller.runJavaScript('''
-      (function() {
-        // Create CSS rules to hide ads immediately
-        var css = `
-          iframe,
-          [id*="ad"],
-          [class*="gg"],
-          [class*="HF"], 
-          [class*="sitemaji"],
-          [class*="ads"],
-          [href*="ad"],
-          [href*="click"],
-          [src*="doubleclick.net"],
-          [src*="ad"],
-          [src*="adservice.google"],
-          [src*="sitemaji.com"],
-          .clickforceads {
-            display: none !important;
-            visibility: hidden !important;
-            opacity: 0 !important;
-            height: 0 !important;
-            width: 0 !important;
-            position: absolute !important;
-            left: -9999px !important;
-          }
-        `;
-        
-        // Inject CSS immediately
-        var style = document.createElement('style');
-        style.type = 'text/css';
-        style.innerHTML = css;
-        (document.head || document.documentElement).appendChild(style);
-        
-        console.log('🛡️ Ad blocking CSS injected immediately');
-      })();
-    ''');
+  void _handleHorizontalDragStart(DragStartDetails details) {
+    _isHorizontalDragActive = true;
+    _horizontalDragOffset = 0;
   }
 
-  Future<void> hideAds() async{
-    await _controller.runJavaScript(_adblockerJS);
-  }
-
-  Future<void> showMangaBoxOnly() async{
-    await _controller.runJavaScript(_hideOtherAreaJS);
-    
-    // Backup retry mechanism - check if manga-box is visible after a delay
-    Future.delayed(const Duration(milliseconds: 1500), () async {
-      try {
-        var result = await _controller.runJavaScriptReturningResult('''
-          (function() {
-            var mangaBox = document.querySelector('.manga-box');
-            if (!mangaBox) return false;
-            
-            var style = window.getComputedStyle(mangaBox);
-            var isVisible = style.display !== 'none' && style.visibility !== 'hidden';
-            var hasContent = mangaBox.offsetHeight > 0;
-            
-            return isVisible && hasContent;
-          })();
-        ''');
-        
-        if (result.toString() == 'false') {
-          print('⚠ Manga box not properly visible, retrying...');
-          await _controller.runJavaScript(_hideOtherAreaJS);
-          
-          // Final retry after another delay
-          Future.delayed(const Duration(milliseconds: 1000), () async {
-            await _controller.runJavaScript('''
-              // Emergency fallback - force show manga box
-              var mangaBox = document.querySelector('.manga-box');
-              if (mangaBox) {
-                document.querySelectorAll('body > *:not(.manga-box)').forEach(el => el.style.display = 'none');
-                mangaBox.style.display = 'block';
-                mangaBox.style.visibility = 'visible';
-                console.log('🔧 Emergency fallback applied');
-              }
-            ''');
-          });
-        } 
-      } catch (e) {
-        print('Error checking manga box visibility: $e');
-      }
-    });
-  }
-
-  Future<Map<String, dynamic>> fetchChapterListInBackground(String detailUrl) async {
-    print("fetching: $detailUrl");
-    
-    // Check cache first
-    String comicId = extractComicIdFromUrl(detailUrl);
-    var cachedData = await getCachedChapterData(comicId);
-    if (cachedData != null) {
-      print("Using cached data for comic $comicId");
-      return cachedData;
+  void _handleHorizontalDragUpdate(DragUpdateDetails details) {
+    if (!_isHorizontalDragActive) {
+      return;
     }
+    _horizontalDragOffset += details.delta.dx;
+  }
 
-    try {
-      // HTTP request approach (much faster than WebView)
-      final response = await http.get(
-        Uri.parse(detailUrl),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'Accept-Encoding': 'gzip, deflate',
-        },
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        // Parse HTML to extract chapter data
-        final document = html_parser.parse(response.body);
-        final chapterList = document.querySelector('#chapterList > ul');
-        
-        var data = {
-          'count': 0,
-          'chapters': <Map<String, String>>[],
-          'comicId': comicId,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        };
-
-        if (chapterList != null) {
-          final liElements = chapterList.querySelectorAll('li');
-          data['count'] = liElements.length;
-          
-          for (var li in liElements) {
-            var link = li.querySelector('a');
-            if (link != null) {
-              var href = link.attributes['href'] ?? '';
-              var title = link.text.trim();
-              
-              if (href.isNotEmpty && title.isNotEmpty) {
-                (data['chapters'] as List).add({
-                  'title': title,
-                  'url': href.startsWith('http') ? href : 'https://m.manhuagui.com$href'
-                });
-              }
-            }
-          }
-          
-          print("Chapter Count: ${data['count']}");
-        } else {
-          print("Chapter Count: 0 (no chapter list found)");
-        }
-
-        // Cache the result
-        await cacheChapterData(comicId, data);
-        return data;
-      } else {
-        print("Failed to fetch: ${response.statusCode}");
-        return {'count': 0, 'chapters': [], 'comicId': comicId};
-      }
-    } catch (e) {
-      print('Error in background fetch: $e');
-      return {'count': 0, 'chapters': [], 'comicId': comicId};
+  void _handleHorizontalDragEnd(DragEndDetails details) {
+    if (!_isHorizontalDragActive) {
+      return;
     }
-  }
+    _isHorizontalDragActive = false;
+    final double delta = _horizontalDragOffset;
+    _horizontalDragOffset = 0;
 
-  String extractComicIdFromUrl(String url) {
-    var match = RegExp(r'/comic/(\d+)').firstMatch(url);
-    return match?.group(1) ?? '';
-  }
-
-  Future<void> cacheChapterData(String comicId, Map<String, dynamic> data) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String dataJson = jsonEncode(data);
-    await prefs.setString('chapters_$comicId', dataJson);
-  }
-
-  Future<Map<String, dynamic>?> getCachedChapterData(String comicId) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? dataJson = prefs.getString('chapters_$comicId');
-    
-    if (dataJson != null) {
-      var data = jsonDecode(dataJson) as Map<String, dynamic>;
-      // Check if cache is still valid (24 hours)
-      int timestamp = data['timestamp'] ?? 0;
-      int now = DateTime.now().millisecondsSinceEpoch;
-      int cacheAge = now - timestamp;
-      
-      if (cacheAge < 24 * 60 * 60 * 1000) { // 24 hours in milliseconds
-        return data;
-      }
-    }
-    
-    return null;
-  }
-
-  Future<String> extractComicGenres(String detailUrl) async {
-    try {
-      print('🔍 Fetching genres from: $detailUrl');
-      final response = await http.get(
-        Uri.parse(detailUrl),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final document = html_parser.parse(response.body);
-        var genreList = <String>[];
-        
-        print('📄 Page loaded, searching for genres...');
-        
-        // Try multiple approaches to find genres
-        // Approach 1: Look for all dl elements
-        var dlElements = document.querySelectorAll('dl');
-        print('🔎 Found ${dlElements.length} dl elements');
-        
-        for (var dl in dlElements) {
-          var dtElements = dl.querySelectorAll('dt');
-          for (var dt in dtElements) {
-            print('📝 DT text: "${dt.text}"');
-            if (dt.text.contains('类别') || dt.text.contains('類別')) {
-              print('✅ Found genre section!');
-              var dd = dt.nextElementSibling;
-              if (dd != null && dd.localName == 'dd') {
-                print('📋 DD content: ${dd.outerHtml}');
-                var genreLinks = dd.querySelectorAll('a');
-                print('🔗 Found ${genreLinks.length} genre links');
-                for (var link in genreLinks) {
-                  String genreName = link.attributes['title'] ?? link.text.trim();
-                  print('🏷️ Genre found: "$genreName"');
-                  if (genreName.isNotEmpty) {
-                    // Translate to Traditional Chinese if available
-                    String translatedGenre = genreTranslationMap[genreName] ?? genreName;
-                    print('🌐 Translated to: "$translatedGenre"');
-                    genreList.add(translatedGenre);
-                  }
-                }
-              }
-              break;
-            }
-          }
-          if (genreList.isNotEmpty) break;
-        }
-        
-        // Approach 2: Direct search for genre pattern
-        if (genreList.isEmpty) {
-          print('🔍 Trying direct search for genre pattern...');
-          var genreText = response.body;
-          var genreRegex = RegExp(r'类别[：:][^<]*<dd[^>]*>(.*?)</dd>', multiLine: true);
-          var match = genreRegex.firstMatch(genreText);
-          if (match != null) {
-            print('📝 Found genre HTML: ${match.group(1)}');
-            var linkRegex = RegExp(r'<a[^>]*title="([^"]+)"[^>]*>([^<]+)</a>');
-            var linkMatches = linkRegex.allMatches(match.group(1) ?? '');
-            for (var linkMatch in linkMatches) {
-              String genreName = linkMatch.group(1) ?? linkMatch.group(2) ?? '';
-              print('🏷️ Genre found via regex: "$genreName"');
-              if (genreName.isNotEmpty) {
-                // Translate to Traditional Chinese if available
-                String translatedGenre = genreTranslationMap[genreName] ?? genreName;
-                print('🌐 Translated to: "$translatedGenre"');
-                genreList.add(translatedGenre);
-              }
-            }
-          }
-        }
-        
-        String result = genreList.join(',');
-        print('🎯 Final genres: "$result"');
-        return result;
-      } else {
-        print('❌ HTTP Error: ${response.statusCode}');
-      }
-    } catch (e) {
-      print('❌ Error extracting genres: $e');
-    }
-    
-    return '';
-  }
-
-  Future<void> checkAllFavoritesForNewChapters() async {
-    print("🔍 Checking favorites for new chapters...");
-    
-    List<String> favorites = await getFavorites();
-    if (favorites.isEmpty) {
-      print("No favorites to check");
+    if (delta.abs() < _horizontalSwipeThreshold) {
       return;
     }
 
-    List<Future<void>> checkTasks = [];
-    
-    for (String favorite in favorites) {
-      String comicId = RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
-      if (comicId.isNotEmpty) {
-        checkTasks.add(checkSingleComicForNewChapters(comicId, favorite));
-      }
+    final String url = currentUrl;
+    if (url.isEmpty ||
+        (!comicPattern.hasMatch(url) && !comicPattern1.hasMatch(url))) {
+      return;
     }
 
-    // Run all checks in parallel for better performance
-    await Future.wait(checkTasks);
-    
-    // Update UI if new chapters found
-    if (_newChapterCounts.isNotEmpty) {
-      setState(() {}); // Trigger UI rebuild to show notifications
-      int totalNewChapters = _newChapterCounts.values.fold(0, (sum, count) => sum + count);
-      print("📚 Found $totalNewChapters new chapters across ${_newChapterCounts.length} comics!");
-    } else {
-      print("✅ All favorites are up to date");
-    }
+    final bool toNext = delta < 0;
+    _triggerSwipeNavigation(toNext: toNext);
   }
 
-  Future<void> checkSingleComicForNewChapters(String comicId, String favorite) async {
-    try {
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-      
-      // Get the initial chapter count saved when user first favorited
-      String? initialCountStr = prefs.getString('initial_count_$comicId');
-      if (initialCountStr == null) {
-        print("⚠️ No initial count found for comic $comicId, skipping...");
-        return;
+  void _handleHorizontalDragCancel() {
+    _isHorizontalDragActive = false;
+    _horizontalDragOffset = 0;
+  }
+
+  Future<void> _triggerSwipeNavigation({required bool toNext}) async {
+    if (_isSwipeNavigating) {
+      return;
+    }
+    final String url = currentUrl;
+    if (url.isEmpty ||
+        (!comicPattern.hasMatch(url) && !comicPattern1.hasMatch(url))) {
+      return;
+    }
+
+    _isSwipeNavigating = true;
+    final String direction = toNext ? 'next' : 'prev';
+    final String textHint = toNext ? '下' : '上';
+
+    int currentPageNumber = 1;
+    int totalPages = _totalPages;
+    final parts = currentPage.split('/');
+    if (parts.isNotEmpty) {
+      currentPageNumber = int.tryParse(parts[0]) ?? 1;
+      if (parts.length > 1) {
+        totalPages = int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ??
+            totalPages;
       }
-      
-      int initialCount = int.tryParse(initialCountStr) ?? 0;
-      
-      // Fetch current chapter count
-      var currentData = await fetchChapterListInBackground(detailUrl);
-      int currentCount = currentData['count'] ?? 0;
-      
-      if (currentCount > initialCount) {
-        // There are new chapters since user favorited
-        int newChapters = currentCount - initialCount;
-        _newChapterCounts[comicId] = newChapters;
-        
-        String comicName = RegExp(r'漫畫: ([^,]+)').firstMatch(favorite)?.group(1) ?? 'Unknown';
-        print("🆕 $comicName has $newChapters new chapters! ($initialCount → $currentCount)");
+    }
+
+    bool shouldShowChapterLoading =
+        toNext ? currentPageNumber >= totalPages : currentPageNumber <= 1;
+
+    final String script = '''
+      (function() {
+        var selectors = ['#$direction', '.manga-panel-$direction', '.manga-panel-$direction.manga-panel-on', 'a[rel="$direction"]'];
+        for (var i = 0; i < selectors.length; i++) {
+          var el = document.querySelector(selectors[i]);
+          if (el) {
+            el.click();
+            return true;
+          }
+        }
+        var hint = /$textHint/;
+        var links = document.querySelectorAll('.manga-box a');
+        for (var j = 0; j < links.length; j++) {
+          var node = links[j];
+          if (!node) continue;
+          var text = node.textContent || '';
+          if (hint.test(text)) {
+            node.click();
+            return true;
+          }
+        }
+        return false;
+      })();
+    ''';
+
+    try {
+      final result = await _controller.runJavaScriptReturningResult(script);
+      if (result.toString() == 'true') {
+        if (shouldShowChapterLoading) {
+          loadingScreen(toNext ? 2 : 1, 2000);
+        }
       } else {
-        // No new chapters, remove from new list
-        _newChapterCounts.remove(comicId);
-      }
-    } catch (e) {
-      print('Error checking comic $comicId: $e');
-    }
-  }
-
-  Future<Map<String, dynamic>> getStoredComicProgress(String comicId) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? progressJson = prefs.getString('progress_$comicId');
-    
-    if (progressJson != null) {
-      return jsonDecode(progressJson) as Map<String, dynamic>;
-    }
-    
-    return {'totalChapters': 0, 'lastWatchedChapter': 0, 'hasNewChapters': false};
-  }
-
-  Future<void> updateComicProgress(String comicId, Map<String, dynamic> progress) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String progressJson = jsonEncode(progress);
-    await prefs.setString('progress_$comicId', progressJson);
-  }
-
-  Future<void> markChapterAsWatched(String comicId, int chapterNumber) async {
-    var progress = await getStoredComicProgress(comicId);
-    progress['lastWatchedChapter'] = chapterNumber;
-    progress['hasNewChapters'] = false; // Clear new chapter flag when user reads
-    await updateComicProgress(comicId, progress);
-    
-    // Remove from new chapters count
-    setState(() {
-      _newChapterCounts.remove(comicId);
-    });
-  }
-
-  bool hasNewChapters(String comicId) {
-    return _newChapterCounts.containsKey(comicId);
-  }
-
-  int getNewChapterCount(String comicId) {
-    return _newChapterCounts[comicId] ?? 0;
-  }
-
-  List<String> getAvailableGenres(List<String> favorites) {
-    Set<String> allGenres = {'全部'};
-    
-    for (String favorite in favorites) {
-      String genresStr = RegExp(r'Genres: ([^,]*(?:,[^,]*)*)').firstMatch(favorite)?.group(1) ?? '';
-      if (genresStr.isNotEmpty) {
-        List<String> genres = genresStr.split(',');
-        for (String genre in genres) {
-          String trimmedGenre = genre.trim();
-          if (trimmedGenre.isNotEmpty) {
-            // Apply translation to displayed genres
-            String translatedGenre = genreTranslationMap[trimmedGenre] ?? trimmedGenre;
-            allGenres.add(translatedGenre);
-          }
-        }
-      }
-    }
-    
-    List<String> genreList = allGenres.toList();
-    genreList.remove('全部'); // Remove from current position
-    genreList.sort(); // Sort remaining genres
-    genreList.insert(0, '全部'); // Insert at beginning
-    return genreList;
-  }
-
-  Future<void> updateFavoritesWithGenres() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    bool hasUpdates = false;
-    
-    for (int i = 0; i < favorites.length; i++) {
-      String favorite = favorites[i];
-      
-      // Check if this favorite already has genres
-      if (!favorite.contains('Genres:')) {
-        String comicId = RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
-        if (comicId.isNotEmpty) {
-          print("🔄 Adding genres to existing favorite: $comicId");
-          
-          String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-          String genres = await extractComicGenres(detailUrl);
-          
-          // Add genres to existing favorite
-          favorites[i] = '$favorite, Genres: $genres';
-          hasUpdates = true;
-          
-          // Small delay to avoid overwhelming the server
-          await Future.delayed(const Duration(milliseconds: 500));
-        }
-      }
-    }
-    
-    if (hasUpdates) {
-      await prefs.setStringList('favorites', favorites);
-      print("✅ Updated ${favorites.length} favorites with genres");
-      setState(() {}); // Refresh UI
-    }
-  }
-
-  List<String> filterFavoritesByGenre(List<String> favorites, String selectedGenre) {
-    if (selectedGenre == "全部") {
-      return favorites;
-    }
-    
-    return favorites.where((favorite) {
-      String genresStr = RegExp(r'Genres: ([^,]*(?:,[^,]*)*)').firstMatch(favorite)?.group(1) ?? '';
-      if (genresStr.isEmpty) return false;
-      
-      // Check both original and translated versions
-      List<String> genres = genresStr.split(',');
-      for (String genre in genres) {
-        String trimmedGenre = genre.trim();
-        // Check original genre or its translation
-        String translatedGenre = genreTranslationMap[trimmedGenre] ?? trimmedGenre;
-        if (translatedGenre == selectedGenre) {
-          return true;
-        }
-      }
-      return false;
-    }).toList();
-  }
-
-  Future<void> _checkAndClearIfAtLastChapter(String comicId, String favoriteChapter) async {
-    try {
-      // Get cached chapter data
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      String? dataJson = prefs.getString('chapters_$comicId');
-      
-      if (dataJson != null) {
-        var chapterData = jsonDecode(dataJson) as Map<String, dynamic>;
-        List<dynamic> chapters = chapterData['chapters'] ?? [];
-        
-        if (chapters.isNotEmpty) {
-          // Get the latest chapter title (first in descending order list)
-          String latestChapterTitle = chapters.first['title'] ?? '';
-          
-          // Clean up both strings for comparison
-          String cleanLatest = latestChapterTitle.trim().toLowerCase();
-          String cleanFavorite = favoriteChapter.trim().toLowerCase();
-          
-          // If user is at the last chapter, clear the new chapter flag
-          bool isAtLastChapter = cleanFavorite.isNotEmpty && 
-              (cleanLatest.contains(cleanFavorite) || cleanFavorite.contains(cleanLatest) || cleanLatest == cleanFavorite);
-          
-          if (isAtLastChapter) {
-            print('🏁 User is at last chapter for $comicId, clearing new chapter flag');
-            
-            // Update progress to mark as caught up
-            var progress = await getStoredComicProgress(comicId);
-            int totalChapters = progress['totalChapters'] ?? 0;
-            await updateComicProgress(comicId, {
-              'totalChapters': totalChapters,
-              'lastWatchedChapter': totalChapters, // Mark as caught up
-              'lastChecked': DateTime.now().millisecondsSinceEpoch,
-              'hasNewChapters': false,
-            });
-            
-            // Remove from new chapters count
-            setState(() {
-              _newChapterCounts.remove(comicId);
-            });
-          }
-        }
+        print('Swipe navigation target not found for direction: $direction');
       }
     } catch (e) {
       print('Swipe navigation error: $e');
@@ -755,7 +283,11 @@ class WebViewExampleState extends State<WebViewExample> {
       String genres = await ChapterFetcher.extractComicGenres(detailUrl);
 
       String bCover = "https://cf.mhgui.com/cpic/g/$comicId.jpg";
-      String favoriteItem = '漫畫: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, Genres: $genres';
+      String lastRead =
+          "${DateTime.now().year}.${DateTime.now().month}.${DateTime.now().day} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')}";
+
+      String favoriteItem =
+          '漫畫: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, LastRead: $lastRead, Genres: $genres';
       saveFavorite(favoriteItem);
     } else {
       print("當前不是漫畫頁面");
@@ -782,64 +314,17 @@ class WebViewExampleState extends State<WebViewExample> {
     }
   }
 
-  Future<void> saveFavorite(String favoriteItem) async{
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    int index = favorites.indexWhere(
-      (item) => RegExp(r'ID: (\w*)').firstMatch(item)?.group(1) == RegExp(r'ID: (\w*)').firstMatch(favoriteItem)?.group(1)
-    );
-
-    if(index == -1){
-      setState(() {
-        favorites.add(favoriteItem);
-        _addedToFavorite = true;
-      });
-      print("已加入收藏清單");
-      await prefs.setStringList('favorites', favorites);
-      _refreshFavoritesCache();
-      
-      // Save initial chapter count when adding to favorites
-      String comicId = RegExp(r'ID: (\w*)').firstMatch(favoriteItem)?.group(1) ?? '';
-      if (comicId.isNotEmpty) {
-        // Get current chapter count and save it as baseline
-        String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-        var chapterData = await fetchChapterListInBackground(detailUrl);
-        int currentChapterCount = chapterData['count'] ?? 0;
-        
-        // Save the initial chapter count as baseline
-        await prefs.setString('initial_count_$comicId', currentChapterCount.toString());
-        print("💾 Saved initial chapter count for comic $comicId: $currentChapterCount");
-        
-        // Clear any existing new chapter flags
-        setState(() {
-          _newChapterCounts.remove(comicId);
-        });
-      }
-    } 
-    else {
-      // Existing favorite - only update if from comic page (not detail page)
-      String? currentUrl = await _controller.currentUrl();
-      if (currentUrl != null && comicPattern.hasMatch(currentUrl)) {
-        // From comic page - update reading progress
-        updateFavorite(index, favoriteItem);
-      } else {
-        // From detail page - don't overwrite progress, just mark as favorited
-        setState(() {
-          _addedToFavorite = true;
-        });
-        print("Comic already in favorites, keeping existing progress");
-      }
-    }
+  Future<void> saveFavorite(String favoriteItem) async {
+    await _favoritesManager.addFavorite(favoriteItem);
+    setState(() {
+      _addedToFavorite = true;
+    });
+    print("已加入收藏清單");
   }
 
-  Future<void> updateFavorite(int index, String favoriteItem) async{
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    setState(() {
-      favorites[index] = favoriteItem;
-    });
-    await prefs.setStringList('favorites', favorites);
-    _refreshFavoritesCache();
+  Future<void> updateFavorite(int index, String favoriteItem) async {
+    await _favoritesManager.updateFavorite(index, favoriteItem);
+    setState(() {});
   }
 
   Future<void> removeFavorite(String favoriteItem) async {
@@ -847,13 +332,10 @@ class WebViewExampleState extends State<WebViewExample> {
     setState(() {
       _addedToFavorite = false;
     });
-    await prefs.setStringList('favorites', favorites);
-    _refreshFavoritesCache();
   }
 
   Future<List<String>> getFavorites() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList('favorites') ?? [];
+    return _favoritesManager.cachedFavorites;
   }
 
   void loadingScreen(int loadingType, int delay) {
@@ -867,14 +349,16 @@ class WebViewExampleState extends State<WebViewExample> {
   @override
   void initState() {
     super.initState();
-    setJsFiles();
-    
-    // Load favorites cache
-    _loadFavoritesCache();
-    
-    // Check for new chapters on app launch (delayed to allow UI to load first)
-    Future.delayed(const Duration(seconds: 2), () {
-      checkAllFavoritesForNewChapters();
+    _adBlocker.loadJsFiles();
+    _favoritesManager.loadFavorites().then((_) {
+      if (mounted) {
+        setState(() {
+          _favoritesLoaded = true;
+        });
+        _favoritesManager.checkAllFavoritesForNewChapters().then((_) {
+          if (mounted) setState(() {});
+        });
+      }
     });
     _controller = WebViewController()
       ..canGoBack()
@@ -980,38 +464,12 @@ class WebViewExampleState extends State<WebViewExample> {
       ..loadRequest(Uri.parse('https://manhuagui.com'));
   }
 
-  Future<void> _loadFavoritesCache() async {
-    final favorites = await getFavorites();
-    setState(() {
-      _cachedFavorites = favorites;
-      _cachedAvailableGenres = getAvailableGenres(favorites);
-      _favoritesLoaded = true;
-    });
-  }
-  
-  void _refreshFavoritesCache() {
-    _loadFavoritesCache();
-  }
-
-  Future<void> _initializeFavoritesAndCheckChapters() async {
-    // First load favorites cache
-    await _loadFavoritesCache();
-    await restoreNewChapterCountsFromStorage();
-    
-    // Then check for new chapters (with a small delay to let UI settle)
-    Future.delayed(const Duration(seconds: 1), () {
-      if (mounted && _cachedFavorites.isNotEmpty) {
-        checkAllFavoritesForNewChapters();
-      }
-    });
-  }
-
   void _showTopNotification(String message) {
     OverlayState? overlayState = Overlay.of(context);
     late OverlayEntry overlayEntry;
-    
+
     overlayEntry = OverlayEntry(
-      builder: (context) => _AnimatedTopNotification(
+      builder: (context) => AnimatedTopNotification(
         message: message,
         onComplete: () => overlayEntry.remove(),
       ),
@@ -1207,81 +665,95 @@ class WebViewExampleState extends State<WebViewExample> {
                 children: [
                   const SizedBox(
                       child: Center(
-                        child: Text(
-                          '我的書櫃', 
-                          style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)
-                        )
-                      )
-                    ),
-                    Expanded(
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: favoriteListWidget(context),
-                      ),
-                    ),
-                    SizedBox(
+                          child: Text('我的書櫃',
+                              style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white)))),
+                  Expanded(
+                    child: SizedBox(
                       width: double.infinity,
-                      child: IconButton(
-                        onPressed: () async{
-                          _controller.loadRequest(Uri.parse('https://m.manhuagui.com'));
-                          Scaffold.of(context).closeDrawer();
-                        },
-                        icon: const Icon(Icons.home, color: Colors.white, size: 35),
-                      ),
+                      child: favoriteListWidget(context),
                     ),
-                  ],
-                ),
-              );
-            }
-          ),
+                  ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: IconButton(
+                      onPressed: () async {
+                        _controller
+                            .loadRequest(Uri.parse('https://m.manhuagui.com'));
+                        Scaffold.of(context).closeDrawer();
+                      },
+                      icon:
+                          const Icon(Icons.home, color: Colors.white, size: 35),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
         ),
         body: Stack(
           children: [
             SafeArea(
               child: WebViewWidget(
-                controller: _controller,
-                gestureRecognizers: Set()
-                ..add(
-                  Factory<AllowVerticalDragGestureRecognizer>(() => 
-                    AllowVerticalDragGestureRecognizer()
-                    ..onUpdate = (DragUpdateDetails details){
-                      if(details.delta.dy > 0 && _scrollingDown==false && details.primaryDelta!>15){
-                        //print("Scrolling Down : $_scrollingDown");
-                        setState(() => _scrollingDown = true);
-                      } else if(details.delta.dy < 0 && details.primaryDelta!<-15){
-                        setState(() => _scrollingDown = false);
-                      }
-                    }
-                  )
-                )
-                ..add(
-                  Factory<AllowTapGestureRecognizer>(() =>
-                    AllowTapGestureRecognizer()
-                    ..onTap = () async{
-                      if(comicPattern.hasMatch(currentUrl)){
-                        int? pPage = int.tryParse(currentPage.split('/')[0]) ?? 1;
-                        int? lPage = _totalPages;
+                  controller: _controller,
+                  gestureRecognizers: Set()
+                    ..add(Factory<AllowVerticalDragGestureRecognizer>(
+                        () => AllowVerticalDragGestureRecognizer()
+                          ..onUpdate = (DragUpdateDetails details) {
+                            if (details.delta.dy > 0 &&
+                                _scrollingDown == false &&
+                                details.primaryDelta! > 15) {
+                              setState(() => _scrollingDown = true);
+                            } else if (details.delta.dy < 0 &&
+                                details.primaryDelta! < -15) {
+                              setState(() => _scrollingDown = false);
+                            }
+                          }))
+                    ..add(Factory<AllowHorizontalDragGestureRecognizer>(() {
+                      final recognizer = AllowHorizontalDragGestureRecognizer();
+                      recognizer.onStart = _handleHorizontalDragStart;
+                      recognizer.onUpdate = _handleHorizontalDragUpdate;
+                      recognizer.onEnd = _handleHorizontalDragEnd;
+                      recognizer.onCancel = _handleHorizontalDragCancel;
+                      recognizer.minFlingDistance = _horizontalSwipeThreshold;
+                      return recognizer;
+                    }))
+                    ..add(Factory<AllowTapGestureRecognizer>(
+                        () => AllowTapGestureRecognizer()
+                          ..onTap = () async {
+                            if (comicPattern.hasMatch(currentUrl)) {
+                              int? pPage =
+                                  int.tryParse(currentPage.split('/')[0]) ?? 1;
+                              int? lPage = _totalPages;
 
-                        Future.delayed(const Duration(milliseconds: 50), () async{
-                          String? u = await _controller.currentUrl();
-                          var p = RegExp(r"#p=(\d+)").firstMatch(u!)?.group(1) ?? 1;
-                          int? cPage = int.tryParse(p.toString());
-                          //print('Previous Page: $pPage, Current Page: $cPage, Last Page: $lPage');
+                              Future.delayed(const Duration(milliseconds: 50),
+                                  () async {
+                                String? u = await _controller.currentUrl();
+                                var p = RegExp(r"#p=(\d+)")
+                                        .firstMatch(u!)
+                                        ?.group(1) ??
+                                    1;
+                                int? cPage = int.tryParse(p.toString());
 
-                          if(cPage==1 && pPage==1){loadingScreen(1, 2000);} //! Previous Chapter
-                          else if(pPage==lPage && cPage==pPage){loadingScreen(2, 2000);} //! Next Chapter
-                        });
-                      }
-                      setState((){
-                        _scrollingDown = false;
-                        _listPageSelector = false;
-                      });
-                    }
-                  )
-                )
-              ),
+                                if (cPage == null) {
+                                  return;
+                                }
+
+                                if (cPage == 1 && pPage == 1) {
+                                  await _triggerSwipeNavigation(toNext: false);
+                                } else if (pPage == lPage && cPage == pPage) {
+                                  await _triggerSwipeNavigation(toNext: true);
+                                }
+                              });
+                            }
+                            setState(() {
+                              _scrollingDown = false;
+                              _listPageSelector = false;
+                            });
+                          }))),
             ),
-            //! AppBar
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
               top: _scrollingDown ? 0 : -100,
@@ -1297,53 +769,55 @@ class WebViewExampleState extends State<WebViewExample> {
                 padding:
                     const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
                 child: SafeArea(
-                  child: Builder(
-                    builder: (context){
-                      return Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Stack(
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.collections_bookmark_rounded, color: Colors.white, size: 30),
-                                onPressed: () {
-                                  Scaffold.of(context).openDrawer();
-                                },
-                              ),
-                              if (_newChapterCounts.isNotEmpty)
-                                Positioned(
-                                  right: 2,
-                                  top: 0,
-                                  child: Container(
-                                    padding: const EdgeInsets.all(2),
-                                    decoration: const BoxDecoration(
-                                      color: Colors.orange,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Text(
-                                      '${_newChapterCounts.length}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                  child: Builder(builder: (context) {
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Stack(
+                          children: [
+                            IconButton(
+                              icon: const Icon(
+                                  Icons.collections_bookmark_rounded,
+                                  color: Colors.white,
+                                  size: 30),
+                              onPressed: () {
+                                Scaffold.of(context).openDrawer();
+                              },
+                            ),
+                            if (_favoritesManager.newChapterCounts.isNotEmpty)
+                              Positioned(
+                                right: 2,
+                                top: 0,
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.orange,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Text(
+                                    '${_favoritesManager.newChapterCounts.length}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 ),
-                            ],
-                          ),
-                          Flexible(
-                            child: InkWell(
-                              onTap: (){
-                                String? url = currentUrl.replaceFirst(RegExp(r'(?<=comic/\d+)/.*'), '');
-                                _controller.loadRequest(Uri.parse(url));
-                                //print(url);
-                              },
-                              child: FittedBox(
-                                fit: BoxFit.fitHeight,
-                                child: Text(
-                                  "$currentComic $currentComicChap",
-                                  style: const TextStyle(
+                              ),
+                          ],
+                        ),
+                        Flexible(
+                          child: InkWell(
+                            onTap: () {
+                              String? url = currentUrl.replaceFirst(
+                                  RegExp(r'(?<=comic/\d+)/.*'), '');
+                              _controller.loadRequest(Uri.parse(url));
+                            },
+                            child: FittedBox(
+                              fit: BoxFit.fitHeight,
+                              child: Text(
+                                "$currentComic $currentComicChap",
+                                style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
@@ -1584,56 +1058,48 @@ class WebViewExampleState extends State<WebViewExample> {
         Column(
           children: [
             Container(
-                padding: const EdgeInsets.all(12),
-                margin: const EdgeInsets.fromLTRB(10, 10, 10, 0),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Colors.grey[850]!, Colors.grey[800]!],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(12),
+              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.fromLTRB(10, 10, 10, 0),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.grey[850]!, Colors.grey[800]!],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.orange.withOpacity(0.3)),
-                      ),
-                      child: const Icon(Icons.category, color: Colors.orange, size: 22),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.withOpacity(0.3)),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _buildCategorySelector(),
-                    ),
-                    const SizedBox(width: 12),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.orange.withOpacity(0.3)),
-                      ),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: _isRefreshingGenres ? null : () async {
-                          setState(() {
-                            _isRefreshingGenres = true;
-                          });
-                          print('🔄 Refresh button pressed!');
-                          try {
-                            await updateFavoritesWithGenres();
-                            _refreshFavoritesCache();
-                          } finally {
-                            setState(() {
-                              _isRefreshingGenres = false;
-                            });
-                          }
-                        },
-                        child: _isRefreshingGenres 
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: _isRefreshingGenres
+                          ? null
+                          : () async {
+                              setState(() {
+                                _isRefreshingGenres = true;
+                              });
+                              print('🗂️ Category sync pressed!');
+                              try {
+                                await _favoritesManager
+                                    .updateFavoritesWithGenres();
+                                if (mounted) {
+                                  _showTopNotification("已更新分類資訊");
+                                  setState(() {});
+                                }
+                              } finally {
+                                setState(() {
+                                  _isRefreshingGenres = false;
+                                });
+                              }
+                            },
+                      child: _isRefreshingGenres
                           ? const SizedBox(
                               width: 20,
                               height: 20,
@@ -1643,80 +1109,143 @@ class WebViewExampleState extends State<WebViewExample> {
                                     Colors.orange),
                               ),
                             )
-                          : const Icon(Icons.refresh, color: Colors.orange, size: 20),
-                      ),
+                          : const Icon(Icons.category_rounded,
+                              color: Colors.orange, size: 20),
                     ),
-                  ],
-                ),
-              ),
-              // Filtered favorites list
-              Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
-                  itemCount: filteredFavorites.length,
-                  itemBuilder: (context, index) {
-                    String comicId = RegExp(r'ID: (\w+)').firstMatch(filteredFavorites[index])?.group(1) ?? 'unknown_$index';
-                    return FavoriteListItem(
-                      key: ValueKey(comicId), // Unique key based on comic ID
-                      favorite: filteredFavorites[index],
-                      index: index,
-                      canDeleteIndex: _canDeleteIndex,
-                onLongPress: (idx) {
-                  setState(() {
-                    _canDeleteIndex = _canDeleteIndex == idx ? null : idx;
-                  });
-                },
-                onDelete: (favorite) {
-                  removeFavorite(favorite);
-                  setState(() => _addedToFavorite = false);
-                },
-                onTap: (favorite, comicId, hasNew, favoriteChapter) async {
-                  String url = RegExp(r'URL: (https?://[^,]+)').firstMatch(favorite)!.group(1)!;
-                  _controller.loadRequest(Uri.parse(url));
-                  Navigator.of(context).pop();
-                  setState(() => _scrollingDown = false);
-                  
-                  // Clear hasNew flag when user taps into the comic
-                  if (hasNew && comicId.isNotEmpty) {
-                    setState(() {
-                      _newChapterCounts.remove(comicId);
-                    });
-                  }
-                },
-                hasNewChapters: hasNewChapters,
-                getNewChapterCount: getNewChapterCount,
-                getStoredComicProgress: getStoredComicProgress,
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-          // Loading overlay when refreshing genres
-          if (_isRefreshingGenres)
-            Container(
-              color: Colors.black.withOpacity(0.5),
-              child: const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildCategorySelector(),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.withOpacity(0.3)),
                     ),
-                    SizedBox(height: 16),
-                    Text(
-                      "更新分類中...",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: _isRefreshingChapters
+                          ? null
+                          : () async {
+                              setState(() {
+                                _isRefreshingChapters = true;
+                              });
+                              print('🔄 Refresh button pressed!');
+                              try {
+                                await _favoritesManager
+                                    .checkAllFavoritesForNewChapters();
+
+                                if (mounted) {
+                                  int newCount =
+                                      _favoritesManager.newChapterCounts.length;
+                                  _showTopNotification(newCount > 0
+                                      ? "已更新！發現 $newCount 部漫畫有新章節"
+                                      : "已更新！所有漫畫都是最新的");
+                                  setState(() {});
+                                }
+                              } finally {
+                                setState(() {
+                                  _isRefreshingChapters = false;
+                                });
+                              }
+                            },
+                      child: _isRefreshingChapters
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.orange),
+                              ),
+                            )
+                          : const Icon(Icons.refresh,
+                              color: Colors.orange, size: 20),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-        ],
-      );
+            Expanded(
+              child: ListView.builder(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
+                itemCount: filteredFavorites.length,
+                itemBuilder: (context, index) {
+                  String comicId = RegExp(r'ID: (\w+)')
+                          .firstMatch(filteredFavorites[index])
+                          ?.group(1) ??
+                      'unknown_$index';
+                  return FavoriteListItem(
+                    key: ValueKey(comicId),
+                    favorite: filteredFavorites[index],
+                    index: index,
+                    canDeleteIndex: _canDeleteIndex,
+                    onLongPress: (idx) {
+                      setState(() {
+                        _canDeleteIndex = _canDeleteIndex == idx ? null : idx;
+                      });
+                    },
+                    onDelete: (favorite) {
+                      removeFavorite(favorite);
+                      setState(() => _addedToFavorite = false);
+                    },
+                    onTap: (favorite, comicId, hasNew, favoriteChapter) async {
+                      final navigator = Navigator.of(context);
+                      if (comicId.isNotEmpty) {
+                        await _favoritesManager.recordFavoriteVisit(comicId);
+                      }
+                      if (!mounted) {
+                        return;
+                      }
+                      String url = RegExp(r'URL: (https?://[^,]+)')
+                          .firstMatch(favorite)!
+                          .group(1)!;
+                      _controller.loadRequest(Uri.parse(url));
+                      navigator.pop();
+                      setState(() => _scrollingDown = false);
+
+                      if (hasNew && comicId.isNotEmpty) {
+                        setState(() {
+                          _favoritesManager.clearNewChapterCount(comicId);
+                        });
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+        if (_isRefreshingGenres || _isRefreshingChapters)
+          Container(
+            color: Colors.black.withOpacity(0.5),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      _isRefreshingGenres ? Colors.green : Colors.orange,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _isRefreshingGenres ? "更新分類中..." : "檢查收藏更新...",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
