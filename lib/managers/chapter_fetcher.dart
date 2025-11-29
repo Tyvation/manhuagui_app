@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as html_parser;
+import '../constants/network_constants.dart';
 
 class ChapterFetcher {
   static const Map<String, String> genreTranslationMap = {
@@ -42,32 +44,33 @@ class ChapterFetcher {
     '杂志': '雜誌',
     '黑道': '黑道',
   };
-
   static String extractComicIdFromUrl(String url) {
     var match = RegExp(r'/comic/(\d+)').firstMatch(url);
     return match?.group(1) ?? '';
   }
 
-  static Future<Map<String, dynamic>> fetchChapterList(String detailUrl) async {
-    print("fetching: $detailUrl");
+  static Future<Map<String, dynamic>> fetchChapterList(String detailUrl, {String? cookies}) async {
+    debugPrint("fetching: $detailUrl");
     String comicId = extractComicIdFromUrl(detailUrl);
 
     try {
-      final response = await http.get(
-        Uri.parse(detailUrl),
-        headers: {
-          'User-Agent':
-              'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'Accept-Encoding': 'gzip, deflate',
-        },
-      ).timeout(const Duration(seconds: 10));
+      final headers = Map<String, String>.from(NetworkConstants.defaultHeaders);
+      if (cookies != null && cookies.isNotEmpty) {
+        headers['Cookie'] = cookies;
+        debugPrint('Fetching with cookies: $cookies');
+      }
+
+      final response = await http
+          .get(
+            Uri.parse(detailUrl),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final document = html_parser.parse(response.body);
         final chapterList = document.querySelector('#chapterList > ul');
+        debugPrint('Chapter List: ${chapterList?.querySelectorAll('li').length}');
 
         var data = {
           'count': 0,
@@ -97,14 +100,14 @@ class ChapterFetcher {
             }
           }
 
-          print("Chapter Count: ${data['count']}");
+          debugPrint("Chapter Count: ${data['count']}");
         } else {
-          print("Chapter Count: 0 (no chapter list found)");
+          debugPrint("Chapter Count: 0 (no chapter list found)");
         }
 
         return data;
       } else {
-        print("Failed to fetch: ${response.statusCode}");
+        debugPrint("Failed to fetch: ${response.statusCode}");
         return {
           'count': 0,
           'chapters': <Map<String, String>>[],
@@ -112,7 +115,7 @@ class ChapterFetcher {
         };
       }
     } catch (e) {
-      print('Error in background fetch: $e');
+      debugPrint('Error in background fetch: $e');
       return {
         'count': 0,
         'chapters': <Map<String, String>>[],
@@ -121,25 +124,27 @@ class ChapterFetcher {
     }
   }
 
-  static Future<String> extractComicGenres(String detailUrl) async {
+  static Future<String> extractComicGenres(String detailUrl,
+      {String? cookies}) async {
     try {
-      print('🔍 Fetching genres from: $detailUrl');
-      final response = await http.get(
-        Uri.parse(detailUrl),
-        headers: {
-          'User-Agent':
-              'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 10));
+      debugPrint('🔍 Fetching genres from: $detailUrl');
+      final headers = Map<String, String>.from(NetworkConstants.defaultHeaders);
+      if (cookies != null && cookies.isNotEmpty) {
+        headers['Cookie'] = cookies;
+      }
+
+      final response = await http
+          .get(
+            Uri.parse(detailUrl),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final document = html_parser.parse(response.body);
         var genreList = <String>[];
 
-        print('📄 Page loaded, searching for genres...');
+        debugPrint('📄 Page loaded, searching for genres...');
 
         // Approach 1: Look for all dl elements
         var dlElements = document.querySelectorAll('dl');
@@ -190,7 +195,7 @@ class ChapterFetcher {
         return genreList.join(',');
       }
     } catch (e) {
-      print('❌ Error extracting genres: $e');
+      debugPrint('❌ Error extracting genres: $e');
     }
 
     return '';

@@ -12,6 +12,7 @@ import 'package:manhuagui_app/managers/chapter_fetcher.dart';
 import 'package:manhuagui_app/managers/favorites_manager.dart';
 import 'package:manhuagui_app/widgets/animated_top_notification.dart';
 import 'package:manhuagui_app/widgets/favorite_list_item.dart';
+import 'package:manhuagui_app/constants/network_constants.dart';
 
 void main() {
   runApp(const MyApp());
@@ -83,6 +84,7 @@ class WebViewExampleState extends State<WebViewExample> {
   final AdBlocker _adBlocker = AdBlocker();
   final FavoritesManager _favoritesManager = FavoritesManager();
 
+  String? _cookies;
   bool _scrollingDown = false;
   int? _canDeleteIndex;
   bool _addedToFavorite = false;
@@ -223,6 +225,19 @@ class WebViewExampleState extends State<WebViewExample> {
 
     if (url != null &&
         (comicPattern.hasMatch(url) || comicPattern1.hasMatch(url))) {
+      // Extract cookies
+      String? cookies;
+      try {
+        final result =
+            await _controller.runJavaScriptReturningResult('document.cookie');
+        cookies = result.toString();
+        if (cookies.startsWith('"') && cookies.endsWith('"')) {
+          cookies = cookies.substring(1, cookies.length - 1);
+        }
+      } catch (e) {
+        debugPrint('Error getting cookies: $e');
+      }
+
       String? title = await _controller.getTitle();
       String comicName;
       String comicChapter;
@@ -234,8 +249,16 @@ class WebViewExampleState extends State<WebViewExample> {
         var match1 = comicPattern1.firstMatch(url);
         comicId = match1!.group(1)!;
 
-        var chapterData = await ChapterFetcher.fetchChapterList(url);
+        var chapterData =
+            await ChapterFetcher.fetchChapterList(url, cookies: cookies);
+        await _favoritesManager.cacheChapterData(comicId, chapterData);
         List<dynamic> chapters = chapterData['chapters'] ?? [];
+
+        // Initialize lastTotalChapters to avoid showing all chapters as new
+        if (chapters.isNotEmpty) {
+          await _favoritesManager.setLastTotalChapters(
+              comicId, chapters.length);
+        }
 
         if (chapters.isNotEmpty) {
           var firstChapter = chapters.last;
@@ -260,6 +283,19 @@ class WebViewExampleState extends State<WebViewExample> {
         comicId = match!.group(1)!;
         finalUrl = url;
 
+        // Fetch and cache chapter data using detail URL
+        String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
+        var chapterData =
+            await ChapterFetcher.fetchChapterList(detailUrl, cookies: cookies);
+        await _favoritesManager.cacheChapterData(comicId, chapterData);
+
+        // Initialize lastTotalChapters to avoid showing all chapters as new
+        List<dynamic> chapters = chapterData['chapters'] ?? [];
+        if (chapters.isNotEmpty) {
+          await _favoritesManager.setLastTotalChapters(
+              comicId, chapters.length);
+        }
+
         int mangaIndex = title!.indexOf('漫画_');
         if (mangaIndex != -1) {
           comicName = title.substring(0, mangaIndex);
@@ -280,7 +316,8 @@ class WebViewExampleState extends State<WebViewExample> {
       }
 
       String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-      String genres = await ChapterFetcher.extractComicGenres(detailUrl);
+      String genres =
+          await ChapterFetcher.extractComicGenres(detailUrl, cookies: cookies);
 
       String bCover = "https://cf.mhgui.com/cpic/g/$comicId.jpg";
       String lastRead =
@@ -364,6 +401,7 @@ class WebViewExampleState extends State<WebViewExample> {
       ..canGoBack()
       ..canGoForward()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setUserAgent(NetworkConstants.userAgent)
       ..clearCache()
       ..setOnJavaScriptAlertDialog((request) async {
         print(request.message);
@@ -379,24 +417,70 @@ class WebViewExampleState extends State<WebViewExample> {
         }
       })
       ..setNavigationDelegate(NavigationDelegate(
+        onWebResourceError: (WebResourceError error) {
+          print(
+              'WebView Error: ${error.description} (Code: ${error.errorCode})');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content:
+                    Text('無法載入網頁: ${error.description} (${error.errorCode})'),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 5),
+                action: SnackBarAction(
+                  label: '重試',
+                  textColor: Colors.white,
+                  onPressed: () => _controller.reload(),
+                ),
+              ),
+            );
+          }
+        },
         onUrlChange: (change) async {
           String? url = await _controller.currentUrl();
-          if (comicPattern.hasMatch(url!)) {
-            Object? page = await _controller.runJavaScriptReturningResult('''
-              document.querySelector('.manga-page').textContent;
-            ''');
-            setState(() {
-              currentPage = page.toString().replaceAll(RegExp(r'["]'), '');
-              if (currentPage != '' && currentPage.split('/').length > 1)
-                _totalPages = int.tryParse(currentPage
-                        .split('/')[1]
-                        .replaceAll(RegExp(r'P'), '')) ??
-                    1;
-            });
+          if (url != null && comicPattern.hasMatch(url)) {
+            try {
+              Object? page = await _controller.runJavaScriptReturningResult('''
+                document.querySelector('.manga-page').textContent;
+              ''');
+              setState(() {
+                currentPage = page.toString().replaceAll(RegExp(r'["]'), '');
+                if (currentPage != '' && currentPage.split('/').length > 1) {
+                  _totalPages = int.tryParse(currentPage
+                          .split('/')[1]
+                          .replaceAll(RegExp(r'P'), '')) ??
+                      1;
+                }
+              });
+
+              // Update favorite progress
+              if (_addedToFavorite) {
+                var match = comicPattern.firstMatch(url);
+                String comicId = match!.group(1)!;
+                String pageNum = currentPage.split('/').first;
+                await _favoritesManager.updateFavoriteProgress(
+                    comicId, currentComicChap, pageNum, url);
+              }
+            } catch (e) {
+              debugPrint('Error in onUrlChange: $e');
+            }
+          }
+
+          // Apply centering inline immediately when URL changes
+          if (url != null && comicPattern.hasMatch(url)) {
+            try {
+              await _controller.runJavaScript('''
+                if (document.body) {
+                  document.body.style.cssText += '; display: flex !important; flex-direction: column !important; justify-content: center !important; align-items: center !important; min-height: 100vh !important; margin: 0 !important; overflow-y: auto !important;';
+                }
+              ''');
+            } catch (e) {
+              debugPrint('Error applying centering in onUrlChange: $e');
+            }
           }
 
           setState(() {
-            currentUrl = url;
+            currentUrl = url ?? '';
           });
         },
         onPageStarted: (url) {
@@ -407,7 +491,55 @@ class WebViewExampleState extends State<WebViewExample> {
         onPageFinished: (url) async {
           String? title = await _controller.getTitle();
           _addedToFavorite = await checkComicInFavorite();
-          if (_addedToFavorite) addComicToFavorite();
+
+          // Update cookies
+          try {
+            final result = await _controller
+                .runJavaScriptReturningResult('document.cookie');
+            String cookies = result.toString();
+            if (cookies.startsWith('"') && cookies.endsWith('"')) {
+              cookies = cookies.substring(1, cookies.length - 1);
+            }
+            _cookies = cookies;
+          } catch (e) {
+            debugPrint('Error updating cookies: $e');
+          }
+
+          if (_addedToFavorite) {
+            // Update progress on page load if it's a comic page
+            if (comicPattern.hasMatch(url)) {
+              var match = comicPattern.firstMatch(url);
+              String comicId = match!.group(1)!;
+
+              try {
+                Object? page =
+                    await _controller.runJavaScriptReturningResult('''
+                  document.querySelector('.manga-page').textContent;
+                ''');
+                String p = page.toString().replaceAll(RegExp(r'["]'), '');
+                String pageNum = p.split('/').first;
+
+                // Need to get chapter title if not set yet
+                String chap = currentComicChap;
+                if (chap.isEmpty && title != null) {
+                  int lastUnderscoreIndex = title.lastIndexOf('_');
+                  if (lastUnderscoreIndex != -1) {
+                    chap = title.substring(lastUnderscoreIndex + 1);
+                    chap = chap.replaceAll(' - 看漫画手机版', '');
+                  }
+                }
+
+                await _favoritesManager.updateFavoriteProgress(
+                    comicId, chap, pageNum, url);
+                if (mounted) setState(() {});
+              } catch (e) {
+                debugPrint('Error updating progress: $e');
+              }
+            } else {
+              // Just add if not exists (handled by addComicToFavorite check inside)
+              addComicToFavorite();
+            }
+          }
 
           _adBlocker.hideAds(_controller);
 
@@ -422,18 +554,23 @@ class WebViewExampleState extends State<WebViewExample> {
           if (comicPattern.hasMatch(url)) {
             _adBlocker.showMangaBoxOnly(_controller);
 
-            Object? page = await _controller.runJavaScriptReturningResult('''
-              document.querySelector('.manga-page').textContent;
-            ''');
+            try {
+              Object? page = await _controller.runJavaScriptReturningResult('''
+                document.querySelector('.manga-page').textContent;
+              ''');
 
-            setState(() {
-              currentPage = page.toString().replaceAll(RegExp(r'["]'), '');
-              if (currentPage != '' && currentPage.split('/').length > 1)
-                _totalPages = int.tryParse(currentPage
-                        .split('/')[1]
-                        .replaceAll(RegExp(r'P'), '')) ??
-                    1;
-            });
+              setState(() {
+                currentPage = page.toString().replaceAll(RegExp(r'["]'), '');
+                if (currentPage != '' && currentPage.split('/').length > 1) {
+                  _totalPages = int.tryParse(currentPage
+                          .split('/')[1]
+                          .replaceAll(RegExp(r'P'), '')) ??
+                      1;
+                }
+              });
+            } catch (e) {
+              debugPrint('Error getting page info: $e');
+            }
           }
           setState(() {
             if (title != null) {
@@ -475,7 +612,7 @@ class WebViewExampleState extends State<WebViewExample> {
       ),
     );
 
-    overlayState?.insert(overlayEntry);
+    overlayState.insert(overlayEntry);
   }
 
   Widget _buildCategorySelector() {
@@ -836,33 +973,30 @@ class WebViewExampleState extends State<WebViewExample> {
                           onPressed: () async {
                             if (_addedToFavorite) {
                               String? url = currentUrl;
-                              if (url != null) {
-                                SharedPreferences prefs =
-                                    await SharedPreferences.getInstance();
-                                List<String> favorites =
-                                    prefs.getStringList('favorites') ?? [];
-                                String comicId;
+                              SharedPreferences prefs =
+                                  await SharedPreferences.getInstance();
+                              List<String> favorites =
+                                  prefs.getStringList('favorites') ?? [];
+                              String comicId;
 
-                                if (comicPattern1.hasMatch(url)) {
-                                  var match1 = comicPattern1.firstMatch(url);
-                                  comicId = match1!.group(1)!;
-                                } else if (comicPattern.hasMatch(url)) {
-                                  var match = comicPattern.firstMatch(url);
-                                  comicId = match!.group(1)!;
-                                } else {
-                                  print("URL doesn't match any pattern: $url");
-                                  return;
-                                }
-
-                                var i = favorites.where((item) =>
-                                    RegExp(r'ID: (\w*)')
-                                        .firstMatch(item)
-                                        ?.group(1) ==
-                                    comicId);
-                                removeFavorite(i
-                                    .toString()
-                                    .replaceAll(RegExp(r'[()]'), ''));
+                              if (comicPattern1.hasMatch(url)) {
+                                var match1 = comicPattern1.firstMatch(url);
+                                comicId = match1!.group(1)!;
+                              } else if (comicPattern.hasMatch(url)) {
+                                var match = comicPattern.firstMatch(url);
+                                comicId = match!.group(1)!;
+                              } else {
+                                print("URL doesn't match any pattern: $url");
+                                return;
                               }
+
+                              var i = favorites.where((item) =>
+                                  RegExp(r'ID: (\w*)')
+                                      .firstMatch(item)
+                                      ?.group(1) ==
+                                  comicId);
+                              removeFavorite(
+                                  i.toString().replaceAll(RegExp(r'[()]'), ''));
                             } else {
                               await addComicToFavorite();
                             }
@@ -1087,8 +1221,24 @@ class WebViewExampleState extends State<WebViewExample> {
                               });
                               print('🗂️ Category sync pressed!');
                               try {
+                                String? cookies;
+                                try {
+                                  final result = await _controller
+                                      .runJavaScriptReturningResult(
+                                          'document.cookie');
+                                  cookies = result.toString();
+                                  if (cookies.startsWith('"') &&
+                                      cookies.endsWith('"')) {
+                                    cookies = cookies.substring(
+                                        1, cookies.length - 1);
+                                  }
+                                } catch (e) {
+                                  debugPrint('Error getting cookies: $e');
+                                }
+
                                 await _favoritesManager
-                                    .updateFavoritesWithGenres();
+                                    .updateFavoritesWithGenres(
+                                        cookies: cookies);
                                 if (mounted) {
                                   _showTopNotification("已更新分類資訊");
                                   setState(() {});
@@ -1135,8 +1285,24 @@ class WebViewExampleState extends State<WebViewExample> {
                               });
                               print('🔄 Refresh button pressed!');
                               try {
+                                String? cookies;
+                                try {
+                                  final result = await _controller
+                                      .runJavaScriptReturningResult(
+                                          'document.cookie');
+                                  cookies = result.toString();
+                                  if (cookies.startsWith('"') &&
+                                      cookies.endsWith('"')) {
+                                    cookies = cookies.substring(
+                                        1, cookies.length - 1);
+                                  }
+                                } catch (e) {
+                                  debugPrint('Error getting cookies: $e');
+                                }
+
                                 await _favoritesManager
-                                    .checkAllFavoritesForNewChapters();
+                                    .checkAllFavoritesForNewChapters(
+                                        cookies: cookies);
 
                                 if (mounted) {
                                   int newCount =
@@ -1184,6 +1350,7 @@ class WebViewExampleState extends State<WebViewExample> {
                     favorite: filteredFavorites[index],
                     index: index,
                     canDeleteIndex: _canDeleteIndex,
+                    cookies: _cookies,
                     onLongPress: (idx) {
                       setState(() {
                         _canDeleteIndex = _canDeleteIndex == idx ? null : idx;
@@ -1193,7 +1360,8 @@ class WebViewExampleState extends State<WebViewExample> {
                       removeFavorite(favorite);
                       setState(() => _addedToFavorite = false);
                     },
-                    onTap: (favorite, comicId, hasNew, favoriteChapter) async {
+                    onTap: (favorite, comicId, hasNew, lastChapter,
+                        totalChapters) async {
                       final navigator = Navigator.of(context);
                       if (comicId.isNotEmpty) {
                         await _favoritesManager.recordFavoriteVisit(comicId);
@@ -1201,18 +1369,30 @@ class WebViewExampleState extends State<WebViewExample> {
                       if (!mounted) {
                         return;
                       }
+
                       String url = RegExp(r'URL: (https?://[^,]+)')
                           .firstMatch(favorite)!
                           .group(1)!;
-                      _controller.loadRequest(Uri.parse(url));
-                      navigator.pop();
-                      setState(() => _scrollingDown = false);
 
                       if (hasNew && comicId.isNotEmpty) {
+                        if (totalChapters > 0) {
+                          await _favoritesManager.setLastTotalChapters(
+                              comicId, totalChapters);
+                        }
+
                         setState(() {
                           _favoritesManager.clearNewChapterCount(comicId);
                         });
+                      } else {
+                        if (totalChapters > 0) {
+                          await _favoritesManager.setLastTotalChapters(
+                              comicId, totalChapters);
+                        }
                       }
+
+                      _controller.loadRequest(Uri.parse(url));
+                      navigator.pop();
+                      setState(() => _scrollingDown = false);
                     },
                   );
                 },

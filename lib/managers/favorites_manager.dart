@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chapter_fetcher.dart';
+import '../constants/network_constants.dart';
 
 class FavoritesManager {
   static final FavoritesManager _instance = FavoritesManager._internal();
@@ -34,7 +35,7 @@ class FavoritesManager {
             _chapterCache[comicId] =
                 jsonDecode(dataJson) as Map<String, dynamic>;
           } catch (e) {
-            print('Error decoding cache for $comicId: $e');
+            debugPrint('Error decoding cache for $comicId: $e');
           }
         }
       }
@@ -90,7 +91,7 @@ class FavoritesManager {
     _cachedAvailableGenres = sortedGenres;
   }
 
-  Future<void> updateFavoritesWithGenres() async {
+  Future<void> updateFavoritesWithGenres({String? cookies}) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     List<String> favorites = prefs.getStringList('favorites') ?? [];
     List<String> updatedFavorites = [];
@@ -110,13 +111,16 @@ class FavoritesManager {
       String url =
           RegExp(r'URL: (https?://[^,]+)').firstMatch(favorite)?.group(1) ?? '';
       if (url.isNotEmpty) {
-        String genres = await ChapterFetcher.extractComicGenres(url);
+        String genres =
+            await ChapterFetcher.extractComicGenres(url, cookies: cookies);
         if (genres.isNotEmpty) {
           allGenres.addAll(genres.split(',').where((g) => g.isNotEmpty));
           updatedFavorites.add('$favorite, Genres: $genres');
         } else {
           updatedFavorites.add(favorite);
         }
+        // Add delay to prevent IP blocking (rate limiting)
+        await Future.delayed(NetworkConstants.crawlDelay);
       } else {
         updatedFavorites.add(favorite);
       }
@@ -158,48 +162,52 @@ class FavoritesManager {
     await prefs.setString('chapters_$comicId', jsonEncode(data));
   }
 
-  Future<void> checkAllFavoritesForNewChapters() async {
+  Future<void> checkAllFavoritesForNewChapters({String? cookies}) async {
     _newChapterCounts.clear();
-    List<Future<void>> checkTasks = [];
-
     for (String favorite in _cachedFavorites) {
       String comicId =
           RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
       if (comicId.isNotEmpty) {
-        checkTasks.add(_checkSingleComicForNewChapters(comicId, favorite));
+        await _checkSingleComicForNewChapters(comicId, favorite,
+            cookies: cookies);
+        // Add delay to prevent IP blocking (rate limiting)
+        await Future.delayed(NetworkConstants.crawlDelay);
       }
     }
-
-    await Future.wait(checkTasks);
   }
 
-  Future<void> _checkSingleComicForNewChapters(
-      String comicId, String favorite) async {
-    String url =
-        RegExp(r'URL: (https?://[^,]+)').firstMatch(favorite)?.group(1) ?? '';
-    if (url.isEmpty) return;
+  Future<void> _checkSingleComicForNewChapters(String comicId, String favorite,
+      {String? cookies}) async {
+    // Construct detail URL using comicId to ensure we fetch from the correct page
+    String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
 
     // Force refresh to get latest data
-    Map<String, dynamic> data = await ChapterFetcher.fetchChapterList(url);
+    Map<String, dynamic> data =
+        await ChapterFetcher.fetchChapterList(detailUrl, cookies: cookies);
     await cacheChapterData(comicId, data);
 
     List<dynamic> chapters = data['chapters'] ?? [];
     if (chapters.isEmpty) return;
 
-    String favoriteChapter =
-        RegExp(r'Chapter: ([^,]+)').firstMatch(favorite)?.group(1) ?? '';
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    int lastTotal = prefs.getInt('last_total_chapters_$comicId') ?? 0;
+    int currentTotal = chapters.length;
 
-    int newCount = 0;
-    for (var chapter in chapters) {
-      if (chapter['title'] == favoriteChapter) {
-        break;
-      }
-      newCount++;
+    if (lastTotal == 0) {
+      await setLastTotalChapters(comicId, currentTotal);
+      return;
     }
 
-    if (newCount > 0 && newCount < chapters.length) {
+    int newCount = currentTotal - lastTotal;
+
+    if (newCount > 0) {
       _newChapterCounts[comicId] = newCount;
     }
+  }
+
+  Future<void> setLastTotalChapters(String comicId, int count) async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('last_total_chapters_$comicId', count);
   }
 
   bool hasNewChapters(String comicId) {
@@ -308,7 +316,7 @@ class FavoritesManager {
 
       return DateTime(year, month, day, hour, minute, second);
     } catch (e) {
-      print('Error parsing LastRead value "$value": $e');
+      debugPrint('Error parsing LastRead value "$value": $e');
       return _defaultLastRead;
     }
   }
@@ -400,6 +408,61 @@ class FavoritesManager {
     }
 
     if (updated) {
+      await _normalizeAndPersistFavorites(favorites, prefs);
+    }
+  }
+
+  Future<void> updateFavoriteProgress(
+      String comicId, String chapter, String page, String url) async {
+    if (comicId.isEmpty) return;
+
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    // Use cached favorites as the source of truth
+    List<String> favorites = List.from(_cachedFavorites);
+    bool updated = false;
+    DateTime now = DateTime.now();
+
+    for (int i = 0; i < favorites.length; i++) {
+      String currentId =
+          RegExp(r'ID: (\w+)').firstMatch(favorites[i])?.group(1) ?? '';
+      if (currentId == comicId) {
+        String favorite = favorites[i];
+
+        // Update Chapter
+        if (chapter.isNotEmpty) {
+          favorite = favorite.replaceAll(
+              RegExp(r'Chapter: [^,]*'), "Chapter: $chapter");
+        }
+
+        // Update Page
+        if (page.isNotEmpty) {
+          favorite = favorite.replaceAll(RegExp(r'Page: [^,]*'), "Page: $page");
+        }
+
+        // Update URL
+        if (url.isNotEmpty) {
+          favorite = favorite.replaceAll(RegExp(r'URL: [^,]*'), "URL: $url");
+        }
+
+        // Update LastRead
+        favorite = _setFavoriteLastRead(favorite, now);
+
+        debugPrint('📝 Updating progress for $comicId:');
+        debugPrint('   Chapter: $chapter, Page: $page');
+        debugPrint('   URL: $url');
+        debugPrint(
+            '   Updated entry: ${favorite.length > 100 ? favorite.substring(0, 100) + "..." : favorite}');
+
+        favorites[i] = favorite;
+        updated = true;
+        break;
+      }
+    }
+
+    if (updated) {
+      // Force persist to SharedPreferences
+      await prefs.setStringList('favorites', favorites);
+      // Normalize and update cache
       await _normalizeAndPersistFavorites(favorites, prefs);
     }
   }
