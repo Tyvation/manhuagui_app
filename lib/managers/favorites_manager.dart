@@ -3,183 +3,218 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chapter_fetcher.dart';
 import '../constants/network_constants.dart';
+import '../database/database_helper.dart';
+import '../models/favorite_comic.dart';
 
 class FavoritesManager {
   static final FavoritesManager _instance = FavoritesManager._internal();
   factory FavoritesManager() => _instance;
   FavoritesManager._internal();
 
-  List<String> _cachedFavorites = [];
+  List<FavoriteComic> _cachedFavorites = [];
   List<String> _cachedAvailableGenres = [];
   final Map<String, int> _newChapterCounts = {};
-  final Map<String, Map<String, dynamic>> _chapterCache = {};
   static final DateTime _defaultLastRead = DateTime(2004, 7, 13);
 
-  List<String> get cachedFavorites => _cachedFavorites;
+  List<FavoriteComic> get cachedFavorites => _cachedFavorites;
   List<String> get cachedAvailableGenres => _cachedAvailableGenres;
   Map<String, int> get newChapterCounts => _newChapterCounts;
 
   Future<void> loadFavorites() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    _cachedFavorites = prefs.getStringList('favorites') ?? [];
-    _cachedAvailableGenres = prefs.getStringList('available_genres') ?? [];
+    final dbHelper = DatabaseHelper();
+    _cachedFavorites = await dbHelper.getFavorites();
 
-    // Pre-load chapter cache for favorites
-    for (var favorite in _cachedFavorites) {
-      String comicId =
-          RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
-      if (comicId.isNotEmpty) {
-        String? dataJson = prefs.getString('chapters_$comicId');
-        if (dataJson != null) {
+    // Migration Logic: If DB is empty, check SharedPreferences
+    if (_cachedFavorites.isEmpty) {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      List<String> oldFavorites = prefs.getStringList('favorites') ?? [];
+
+      if (oldFavorites.isNotEmpty) {
+        debugPrint('Migrating favorites from SharedPreferences to SQLite...');
+        for (String favStr in oldFavorites) {
           try {
-            _chapterCache[comicId] =
-                jsonDecode(dataJson) as Map<String, dynamic>;
+            FavoriteComic comic = FavoriteComic.fromString(favStr);
+
+            // Try to migrate chapter cache if available
+            String? chapterJson = prefs.getString('chapters_${comic.id}');
+            List<String> titles = [];
+            if (chapterJson != null) {
+              try {
+                var data = jsonDecode(chapterJson);
+                if (data['chapters'] != null) {
+                  for (var ch in data['chapters']) {
+                    titles.add(ch['title'] ?? '');
+                  }
+                }
+              } catch (e) {
+                debugPrint('Error parsing cached chapters for migration: $e');
+              }
+            }
+
+            FavoriteComic newComic = comic.copyWith(
+              chapterTitles: titles,
+              chapterCount: titles.length,
+            );
+            await dbHelper.insertFavorite(newComic);
           } catch (e) {
-            debugPrint('Error decoding cache for $comicId: $e');
+            debugPrint('Error migrating favorite: $favStr, error: $e');
           }
         }
+        // Reload from DB after migration
+        _cachedFavorites = await dbHelper.getFavorites();
       }
     }
+
+    _sortFavorites();
+    _updateAvailableGenresFromCache();
+  }
+
+  void _sortFavorites() {
+    _cachedFavorites.sort((a, b) {
+      // Helper to check if a comic is "fully completed" (Finished AND Read to the end)
+      bool isCompleted(FavoriteComic c) {
+        if (!c.isFinished) return false;
+        if (c.chapterTitles.isEmpty) return false;
+        // Assuming chapterTitles[0] is the latest chapter
+        return c.latestChapter == c.chapterTitles.first;
+      }
+
+      bool aCompleted = isCompleted(a);
+      bool bCompleted = isCompleted(b);
+
+      // Primary sort: Active (not completed) first, Completed last
+      if (aCompleted != bCompleted) {
+        return aCompleted ? 1 : -1;
+      }
+
+      // Secondary sort: lastRead (Descending)
+      DateTime timeA = _parseLastReadValue(a.lastRead);
+      DateTime timeB = _parseLastReadValue(b.lastRead);
+      return timeB.compareTo(timeA);
+    });
+  }
+
+  void _updateAvailableGenresFromCache() {
+    Set<String> genreSet = {};
+    for (var comic in _cachedFavorites) {
+      if (comic.genres.isNotEmpty) {
+        genreSet.addAll(comic.genres.split(',').where((g) => g.isNotEmpty));
+      }
+    }
+    List<String> sortedGenres = genreSet.toList()..sort();
+    if (!sortedGenres.contains("全部")) {
+      sortedGenres.insert(0, "全部");
+    }
+    _cachedAvailableGenres = sortedGenres;
   }
 
   Future<void> addComicToFavorite(String comicId, String title, String url,
-      String cover, String latestChapter, String page) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-
+      String cover, String latestChapter, String page,
+      {String? genres}) async {
     // Check if already exists
-    if (favorites.any((item) => item.contains('ID: $comicId'))) {
+    if (_cachedFavorites.any((item) => item.id == comicId)) {
       return;
     }
 
-    String genres = await ChapterFetcher.extractComicGenres(url);
-    String favoriteString =
-        "ID: $comicId, 漫畫: $title, URL: $url, Cover: $cover, Chapter: $latestChapter, Page: $page, Genres: $genres";
+    String finalGenres = genres ?? await ChapterFetcher.extractComicGenres(url);
+    String lastRead = _formatLastRead(DateTime.now());
 
-    favorites.add(favoriteString);
-    await prefs.setStringList('favorites', favorites);
-    _cachedFavorites = favorites;
-
-    // Update available genres
-    await _updateAvailableGenres(genres);
-  }
-
-  Future<void> removeFavorite(String favorite) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    favorites.remove(favorite);
-    await prefs.setStringList('favorites', favorites);
-    _cachedFavorites = favorites;
-
-    String comicId = RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
-    if (comicId.isNotEmpty) {
-      _newChapterCounts.remove(comicId);
+    // Fetch chapter list to store titles
+    List<String> titles = [];
+    bool isFinished = false;
+    try {
+      String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
+      Map<String, dynamic> data =
+          await ChapterFetcher.fetchChapterList(detailUrl);
+      if (data['chapters'] != null) {
+        for (var ch in data['chapters']) {
+          titles.add(ch['title'] ?? '');
+        }
+      }
+      if (data['is_finished'] == true) {
+        isFinished = true;
+      }
+    } catch (e) {
+      debugPrint('Error fetching chapters for new favorite: $e');
     }
+
+    FavoriteComic newComic = FavoriteComic(
+      id: comicId,
+      title: title,
+      cover: cover,
+      url: url,
+      latestChapter: latestChapter,
+      page: page,
+      lastRead: lastRead,
+      genres: finalGenres,
+      chapterTitles: titles,
+      chapterCount: titles.length,
+      isFinished: isFinished,
+    );
+
+    await DatabaseHelper().insertFavorite(newComic);
+    _cachedFavorites.add(newComic);
+    _sortFavorites();
+    _updateAvailableGenresFromCache();
   }
 
-  Future<void> _updateAvailableGenres(String newGenres) async {
-    if (newGenres.isEmpty) return;
-
-    Set<String> genreSet = Set.from(_cachedAvailableGenres);
-    List<String> genres = newGenres.split(',');
-    genreSet.addAll(genres.where((g) => g.isNotEmpty));
-
-    List<String> sortedGenres = genreSet.toList()..sort();
-
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('available_genres', sortedGenres);
-    _cachedAvailableGenres = sortedGenres;
+  Future<void> removeFavorite(String comicId) async {
+    await DatabaseHelper().deleteFavorite(comicId);
+    _cachedFavorites.removeWhere((item) => item.id == comicId);
+    _newChapterCounts.remove(comicId);
+    _updateAvailableGenresFromCache();
   }
 
   Future<void> updateFavoritesWithGenres(
       {String? cookies,
       Function(String comicId, bool isRefreshing)?
           onComicRefreshStateChange}) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    List<String> updatedFavorites = [];
-    Set<String> allGenres = {};
+    List<FavoriteComic> updatedFavorites = [];
+    bool changed = false;
 
-    for (String favorite in favorites) {
-      String comicId =
-          RegExp(r'ID: (\d+)').firstMatch(favorite)?.group(1) ?? '';
-      if (favorite.contains('Genres:')) {
-        String genres =
-            RegExp(r'Genres: ([^,]*)').firstMatch(favorite)?.group(1) ?? '';
-        if (genres.isNotEmpty) {
-          allGenres.addAll(genres.split(',').where((g) => g.isNotEmpty));
-        }
-        updatedFavorites.add(favorite);
-        // Mark as processed immediately
-        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
-          onComicRefreshStateChange(comicId, false);
+    for (var comic in _cachedFavorites) {
+      if (comic.genres.isNotEmpty) {
+        updatedFavorites.add(comic);
+        if (onComicRefreshStateChange != null) {
+          onComicRefreshStateChange(comic.id, false);
         }
         continue;
       }
 
-      String url =
-          RegExp(r'URL: (https?://[^,]+)').firstMatch(favorite)?.group(1) ?? '';
-      if (url.isNotEmpty) {
-        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
-          onComicRefreshStateChange(comicId, true);
+      if (comic.url.isNotEmpty) {
+        if (onComicRefreshStateChange != null) {
+          onComicRefreshStateChange(comic.id, true);
         }
 
-        String genres =
-            await ChapterFetcher.extractComicGenres(url, cookies: cookies);
+        String genres = await ChapterFetcher.extractComicGenres(comic.url,
+            cookies: cookies);
+
         if (genres.isNotEmpty) {
-          allGenres.addAll(genres.split(',').where((g) => g.isNotEmpty));
-          updatedFavorites.add('$favorite, Genres: $genres');
+          FavoriteComic updatedComic = comic.copyWith(genres: genres);
+          await DatabaseHelper().updateFavorite(updatedComic);
+          updatedFavorites.add(updatedComic);
+          changed = true;
         } else {
-          updatedFavorites.add(favorite);
+          updatedFavorites.add(comic);
         }
 
-        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
-          onComicRefreshStateChange(comicId, false);
+        if (onComicRefreshStateChange != null) {
+          onComicRefreshStateChange(comic.id, false);
         }
-        // Add delay to prevent IP blocking (rate limiting)
         await Future.delayed(NetworkConstants.crawlDelay);
       } else {
-        updatedFavorites.add(favorite);
-        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
-          onComicRefreshStateChange(comicId, false);
+        updatedFavorites.add(comic);
+        if (onComicRefreshStateChange != null) {
+          onComicRefreshStateChange(comic.id, false);
         }
       }
     }
 
-    await prefs.setStringList('favorites', updatedFavorites);
-    _cachedFavorites = updatedFavorites;
-
-    List<String> sortedGenres = allGenres.toList()..sort();
-    await prefs.setStringList('available_genres', sortedGenres);
-    _cachedAvailableGenres = sortedGenres;
-  }
-
-  Future<Map<String, dynamic>?> getCachedChapterData(String comicId) async {
-    if (_chapterCache.containsKey(comicId)) {
-      var data = _chapterCache[comicId]!;
-      int timestamp = data['timestamp'] ?? 0;
-      int now = DateTime.now().millisecondsSinceEpoch;
-      if (now - timestamp < 24 * 60 * 60 * 1000) {
-        return data;
-      }
+    if (changed) {
+      _cachedFavorites = updatedFavorites;
+      _sortFavorites();
+      _updateAvailableGenresFromCache();
     }
-
-    // Fallback to disk if not in memory (though loadFavorites puts it in memory)
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? dataJson = prefs.getString('chapters_$comicId');
-    if (dataJson != null) {
-      var data = jsonDecode(dataJson) as Map<String, dynamic>;
-      _chapterCache[comicId] = data;
-      return data;
-    }
-    return null;
-  }
-
-  Future<void> cacheChapterData(
-      String comicId, Map<String, dynamic> data) async {
-    _chapterCache[comicId] = data;
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('chapters_$comicId', jsonEncode(data));
   }
 
   Future<void> checkAllFavoritesForNewChapters({
@@ -187,56 +222,61 @@ class FavoritesManager {
     Function(String comicId, bool isRefreshing)? onComicRefreshStateChange,
   }) async {
     _newChapterCounts.clear();
-    for (String favorite in _cachedFavorites) {
-      String comicId =
-          RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
-      if (comicId.isNotEmpty) {
+    for (var favorite in _cachedFavorites) {
+      if (favorite.id.isNotEmpty && !favorite.isFinished) {
         if (onComicRefreshStateChange != null) {
-          onComicRefreshStateChange(comicId, true);
+          onComicRefreshStateChange(favorite.id, true);
         }
-        await _checkSingleComicForNewChapters(comicId, favorite,
-            cookies: cookies);
+        await _checkSingleComicForNewChapters(favorite, cookies: cookies);
         if (onComicRefreshStateChange != null) {
-          onComicRefreshStateChange(comicId, false);
+          onComicRefreshStateChange(favorite.id, false);
         }
-        // Add delay to prevent IP blocking (rate limiting)
         await Future.delayed(NetworkConstants.crawlDelay);
       }
     }
   }
 
-  Future<void> _checkSingleComicForNewChapters(String comicId, String favorite,
+  Future<void> _checkSingleComicForNewChapters(FavoriteComic favorite,
       {String? cookies}) async {
-    // Construct detail URL using comicId to ensure we fetch from the correct page
-    String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-
-    // Force refresh to get latest data
+    String detailUrl = 'https://m.manhuagui.com/comic/${favorite.id}/';
     Map<String, dynamic> data =
         await ChapterFetcher.fetchChapterList(detailUrl, cookies: cookies);
-    await cacheChapterData(comicId, data);
 
     List<dynamic> chapters = data['chapters'] ?? [];
     if (chapters.isEmpty) return;
 
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    int lastTotal = prefs.getInt('last_total_chapters_$comicId') ?? 0;
-    int currentTotal = chapters.length;
+    List<String> newTitles = [];
+    for (var ch in chapters) {
+      newTitles.add(ch['title'] ?? '');
+    }
 
-    if (lastTotal == 0) {
-      await setLastTotalChapters(comicId, currentTotal);
+    // Update the stored chapter titles in DB
+    FavoriteComic updatedComic = favorite.copyWith(
+      chapterTitles: newTitles,
+      chapterCount: newTitles.length,
+      isFinished: data['is_finished'] == true,
+    );
+    await updateFavorite(updatedComic);
+
+    // Calculate new chapters count
+    // We compare the length of the new list with the old list?
+    // Or we can just use the length difference if we assume chapters are only added.
+    // The previous logic used `last_total_chapters` from SharedPreferences.
+    // We can now just compare with `favorite.chapterTitles.length`.
+
+    int lastTotal = favorite.chapterTitles.length;
+    int currentTotal = newTitles.length;
+
+    if (lastTotal == 0 && currentTotal > 0) {
+      // First time fetching or no previous chapters, don't mark all as new?
+      // Or maybe we do? Let's stick to previous behavior: just update.
       return;
     }
 
     int newCount = currentTotal - lastTotal;
-
     if (newCount > 0) {
-      _newChapterCounts[comicId] = newCount;
+      _newChapterCounts[favorite.id] = newCount;
     }
-  }
-
-  Future<void> setLastTotalChapters(String comicId, int count) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('last_total_chapters_$comicId', count);
   }
 
   bool hasNewChapters(String comicId) {
@@ -252,63 +292,27 @@ class FavoritesManager {
   }
 
   bool isFavorite(String comicId) {
-    return _cachedFavorites.any((item) => item.contains('ID: $comicId'));
+    return _cachedFavorites.any((item) => item.id == comicId);
   }
 
-  Future<void> updateFavorite(int index, String favoriteItem) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    if (index >= 0 && index < favorites.length) {
-      favorites[index] = favoriteItem;
-      await prefs.setStringList('favorites', favorites);
-      await _normalizeAndPersistFavorites(favorites, prefs);
+  Future<void> updateFavorite(FavoriteComic comic) async {
+    await DatabaseHelper().updateFavorite(comic);
+    int index = _cachedFavorites.indexWhere((c) => c.id == comic.id);
+    if (index != -1) {
+      _cachedFavorites[index] = comic;
+      _sortFavorites();
     }
   }
 
-  Future<Map<String, dynamic>> getStoredComicProgress(String comicId) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? jsonStr = prefs.getString('comic_progress_$comicId');
-    if (jsonStr != null) {
-      return jsonDecode(jsonStr) as Map<String, dynamic>;
-    }
-    return {};
-  }
-
-  Future<void> addFavorite(String favoriteItem) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String> favorites = prefs.getStringList('favorites') ?? [];
-    // Check for duplicates based on ID
-    String comicId =
-        RegExp(r'ID: (\w+)').firstMatch(favoriteItem)?.group(1) ?? '';
-
-    if (comicId.isNotEmpty) {
-      bool exists = favorites.any(
-          (item) => RegExp(r'ID: (\w+)').firstMatch(item)?.group(1) == comicId);
-      if (exists) return;
-    }
-
-    favorites.add(favoriteItem);
-    await prefs.setStringList('favorites', favorites);
-    await _normalizeAndPersistFavorites(favorites, prefs);
-  }
-
-  List<String> filterFavoritesByGenre(List<String> favorites, String genre) {
+  List<FavoriteComic> filterFavoritesByGenre(
+      List<FavoriteComic> favorites, String genre) {
     if (genre == "全部") return favorites;
     return favorites.where((item) {
-      String itemGenres =
-          RegExp(r'Genres: ([^,]*)').firstMatch(item)?.group(1) ?? '';
-      return itemGenres.split(',').contains(genre);
+      return item.genres.split(',').contains(genre);
     }).toList();
   }
 
-  Future<void> updateComicProgress(
-      String comicId, Map<String, dynamic> progress) async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('comic_progress_$comicId', jsonEncode(progress));
-  }
-
-  // LastRead Helper Methods
-
+  // Helper methods
   String _formatLastRead(DateTime time) {
     String two(int value) => value.toString().padLeft(2, '0');
     return '${time.year}.${time.month}.${time.day} ${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
@@ -350,149 +354,50 @@ class FavoritesManager {
     }
   }
 
-  String _ensureFavoriteHasLastRead(String favorite) {
-    final regex = RegExp(r'LastRead: ([^,]+)');
-    final match = regex.firstMatch(favorite);
-
-    if (match == null) {
-      final defaultString = _formatLastRead(_defaultLastRead);
-      if (favorite.contains(', Genres:')) {
-        return favorite.replaceFirst(
-            ', Genres:', ', LastRead: $defaultString, Genres:');
-      }
-      return '$favorite, LastRead: $defaultString';
-    }
-
-    final normalized = _formatLastRead(_parseLastReadValue(match.group(1)));
-    return favorite.replaceFirst(regex, 'LastRead: $normalized');
-  }
-
-  String _setFavoriteLastRead(String favorite, DateTime timestamp) {
-    final formatted = _formatLastRead(timestamp);
-    final regex = RegExp(r'LastRead: ([^,]+)');
-    if (regex.hasMatch(favorite)) {
-      return favorite.replaceFirst(regex, 'LastRead: $formatted');
-    }
-    if (favorite.contains(', Genres:')) {
-      return favorite.replaceFirst(
-          ', Genres:', ', LastRead: $formatted, Genres:');
-    }
-    return '$favorite, LastRead: $formatted';
-  }
-
-  DateTime _extractLastRead(String favorite) {
-    final match = RegExp(r'LastRead: ([^,]+)').firstMatch(favorite);
-    return _parseLastReadValue(match?.group(1));
-  }
-
-  Future<List<String>> _normalizeAndPersistFavorites(
-      List<String> favorites, SharedPreferences prefs) async {
-    bool needsPersist = false;
-    final entries = <MapEntry<DateTime, String>>[];
-
-    for (final favorite in favorites) {
-      final normalized = _ensureFavoriteHasLastRead(favorite);
-      if (normalized != favorite) {
-        needsPersist = true;
-      }
-      entries.add(MapEntry(_extractLastRead(normalized), normalized));
-    }
-
-    entries.sort((a, b) => b.key.compareTo(a.key));
-    final sortedFavorites = entries.map((entry) => entry.value).toList();
-
-    if (!listEquals(sortedFavorites, favorites)) {
-      needsPersist = true;
-    }
-
-    if (needsPersist) {
-      await prefs.setStringList('favorites', sortedFavorites);
-      _cachedFavorites = sortedFavorites;
-    } else {
-      _cachedFavorites = favorites;
-    }
-
-    return sortedFavorites;
-  }
-
   Future<void> recordFavoriteVisit(String comicId,
       {DateTime? timestamp}) async {
-    if (comicId.isEmpty) {
-      return;
-    }
+    if (comicId.isEmpty) return;
 
-    final prefs = await SharedPreferences.getInstance();
-    final favorites = prefs.getStringList('favorites') ?? [];
-    bool updated = false;
-    final visitTime = timestamp ?? DateTime.now();
+    int index = _cachedFavorites.indexWhere((c) => c.id == comicId);
+    if (index != -1) {
+      FavoriteComic comic = _cachedFavorites[index];
+      String newLastRead = _formatLastRead(timestamp ?? DateTime.now());
+      FavoriteComic updatedComic = comic.copyWith(lastRead: newLastRead);
 
-    for (int i = 0; i < favorites.length; i++) {
-      final currentId =
-          RegExp(r'ID: (\w+)').firstMatch(favorites[i])?.group(1) ?? '';
-      if (currentId == comicId) {
-        favorites[i] = _setFavoriteLastRead(favorites[i], visitTime);
-        updated = true;
-        break;
-      }
-    }
-
-    if (updated) {
-      await _normalizeAndPersistFavorites(favorites, prefs);
+      await updateFavorite(updatedComic);
     }
   }
 
-  Future<void> updateFavoriteProgress(
+  Future<void> updateFavoriteProgressData(
       String comicId, String chapter, String page, String url) async {
     if (comicId.isEmpty) return;
 
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    // Use cached favorites as the source of truth
-    List<String> favorites = List.from(_cachedFavorites);
-    bool updated = false;
-    DateTime now = DateTime.now();
+    int index = _cachedFavorites.indexWhere((c) => c.id == comicId);
+    if (index != -1) {
+      FavoriteComic comic = _cachedFavorites[index];
+      FavoriteComic updatedComic = comic.copyWith(
+        latestChapter: chapter.isNotEmpty ? chapter : null,
+        page: page.isNotEmpty ? page : null,
+        url: url.isNotEmpty ? url : null,
+        lastRead: _formatLastRead(DateTime.now()),
+      );
 
-    for (int i = 0; i < favorites.length; i++) {
-      String currentId =
-          RegExp(r'ID: (\w+)').firstMatch(favorites[i])?.group(1) ?? '';
-      if (currentId == comicId) {
-        String favorite = favorites[i];
-
-        // Update Chapter
-        if (chapter.isNotEmpty) {
-          favorite = favorite.replaceAll(
-              RegExp(r'Chapter: [^,]*'), "Chapter: $chapter");
-        }
-
-        // Update Page
-        if (page.isNotEmpty) {
-          favorite = favorite.replaceAll(RegExp(r'Page: [^,]*'), "Page: $page");
-        }
-
-        // Update URL
-        if (url.isNotEmpty) {
-          favorite = favorite.replaceAll(RegExp(r'URL: [^,]*'), "URL: $url");
-        }
-
-        // Update LastRead
-        favorite = _setFavoriteLastRead(favorite, now);
-
-        debugPrint('📝 Updating progress for $comicId:');
-        debugPrint('   Chapter: $chapter, Page: $page');
-        debugPrint('   URL: $url');
-        debugPrint(
-            '   Updated entry: ${favorite.length > 100 ? favorite.substring(0, 100) + "..." : favorite}');
-
-        favorites[i] = favorite;
-        updated = true;
-        break;
-      }
+      await updateFavorite(updatedComic);
     }
+  }
 
-    if (updated) {
-      // Force persist to SharedPreferences
-      await prefs.setStringList('favorites', favorites);
-      // Normalize and update cache
-      await _normalizeAndPersistFavorites(favorites, prefs);
-    }
+  Future<void> setLastTotalChapters(String comicId, int count) async {
+    // This is now implicitly handled by the chapterTitles length in the DB.
+    // But main.dart might still call this.
+    // We can either update the DB with a dummy list of that length (bad idea)
+    // or just ignore it if we trust checkAllFavoritesForNewChapters to handle it.
+    // However, main.dart calls this when a user clicks a comic to reset the count.
+    // Actually, main.dart calls `clearNewChapterCount` when clicking.
+    // `setLastTotalChapters` is called in main.dart to update the count when entering a comic.
+    // Since we now store the actual titles, we don't need to manually set the count integer anymore.
+    // The count is derived from `chapterTitles.length`.
+    // So this method can be empty or removed.
+    // I'll keep it empty to avoid breaking main.dart for now, or better, remove it and fix main.dart.
+    // I'll remove it and fix main.dart.
   }
 }

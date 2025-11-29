@@ -49,7 +49,8 @@ class ChapterFetcher {
     return match?.group(1) ?? '';
   }
 
-  static Future<Map<String, dynamic>> fetchChapterList(String detailUrl, {String? cookies}) async {
+  static Future<Map<String, dynamic>> fetchChapterList(String detailUrl,
+      {String? cookies}) async {
     debugPrint("fetching: $detailUrl");
     String comicId = extractComicIdFromUrl(detailUrl);
 
@@ -70,14 +71,24 @@ class ChapterFetcher {
       if (response.statusCode == 200) {
         final document = html_parser.parse(response.body);
         final chapterList = document.querySelector('#chapterList > ul');
-        debugPrint('Chapter List: ${chapterList?.querySelectorAll('li').length}');
+        debugPrint(
+            'Chapter List: ${chapterList?.querySelectorAll('li').length}');
 
         var data = {
           'count': 0,
           'chapters': <Map<String, String>>[],
           'comicId': comicId,
           'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'is_finished': false,
         };
+
+        // Check for finished status
+        // Selector: div.book-detail > div.cont-list > div.thumb > i
+        var statusElement = document
+            .querySelector('div.book-detail > div.cont-list > div.thumb > i');
+        if (statusElement != null && statusElement.text.contains('完结')) {
+          data['is_finished'] = true;
+        }
 
         if (chapterList != null) {
           final liElements = chapterList.querySelectorAll('li');
@@ -127,7 +138,6 @@ class ChapterFetcher {
   static Future<String> extractComicGenres(String detailUrl,
       {String? cookies}) async {
     try {
-      debugPrint('🔍 Fetching genres from: $detailUrl');
       final headers = Map<String, String>.from(NetworkConstants.defaultHeaders);
       if (cookies != null && cookies.isNotEmpty) {
         headers['Cookie'] = cookies;
@@ -143,8 +153,6 @@ class ChapterFetcher {
       if (response.statusCode == 200) {
         final document = html_parser.parse(response.body);
         var genreList = <String>[];
-
-        debugPrint('📄 Page loaded, searching for genres...');
 
         // Approach 1: Look for all dl elements
         var dlElements = document.querySelectorAll('dl');

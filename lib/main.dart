@@ -10,6 +10,7 @@ import 'dart:math' as math;
 import 'package:manhuagui_app/managers/ad_blocker.dart';
 import 'package:manhuagui_app/managers/chapter_fetcher.dart';
 import 'package:manhuagui_app/managers/favorites_manager.dart';
+import 'package:manhuagui_app/models/favorite_comic.dart';
 import 'package:manhuagui_app/widgets/animated_top_notification.dart';
 import 'package:manhuagui_app/widgets/favorite_list_item.dart';
 import 'package:manhuagui_app/constants/network_constants.dart';
@@ -85,7 +86,7 @@ class WebViewExampleState extends State<WebViewExample> {
   final FavoritesManager _favoritesManager = FavoritesManager();
 
   String? _cookies;
-  bool _scrollingDown = false;
+  bool _isAppBarVisible = true;
   int? _canDeleteIndex;
   bool _addedToFavorite = false;
   int _isLoadingChapter = 0;
@@ -253,14 +254,13 @@ class WebViewExampleState extends State<WebViewExample> {
 
         var chapterData =
             await ChapterFetcher.fetchChapterList(url, cookies: cookies);
-        await _favoritesManager.cacheChapterData(comicId, chapterData);
         List<dynamic> chapters = chapterData['chapters'] ?? [];
 
         // Initialize lastTotalChapters to avoid showing all chapters as new
-        if (chapters.isNotEmpty) {
-          await _favoritesManager.setLastTotalChapters(
-              comicId, chapters.length);
-        }
+        // if (chapters.isNotEmpty) {
+        //   await _favoritesManager.setLastTotalChapters(
+        //       comicId, chapters.length);
+        // }
 
         if (chapters.isNotEmpty) {
           var firstChapter = chapters.last;
@@ -286,17 +286,15 @@ class WebViewExampleState extends State<WebViewExample> {
         finalUrl = url;
 
         // Fetch and cache chapter data using detail URL
-        String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
-        var chapterData =
-            await ChapterFetcher.fetchChapterList(detailUrl, cookies: cookies);
-        await _favoritesManager.cacheChapterData(comicId, chapterData);
-
+        // String detailUrl = 'https://m.manhuagui.com/comic/$comicId/';
+        // var chapterData =
+        //     await ChapterFetcher.fetchChapterList(detailUrl, cookies: cookies);
         // Initialize lastTotalChapters to avoid showing all chapters as new
-        List<dynamic> chapters = chapterData['chapters'] ?? [];
-        if (chapters.isNotEmpty) {
-          await _favoritesManager.setLastTotalChapters(
-              comicId, chapters.length);
-        }
+        // List<dynamic> chapters = chapterData['chapters'] ?? [];
+        // if (chapters.isNotEmpty) {
+        //   await _favoritesManager.setLastTotalChapters(
+        //       comicId, chapters.length);
+        // }
 
         int mangaIndex = title!.indexOf('漫画_');
         if (mangaIndex != -1) {
@@ -313,7 +311,6 @@ class WebViewExampleState extends State<WebViewExample> {
             comicChapter = "";
           }
         }
-
         comicPage = url.contains('=') ? url.split('=')[1] : "1";
       }
 
@@ -322,12 +319,15 @@ class WebViewExampleState extends State<WebViewExample> {
           await ChapterFetcher.extractComicGenres(detailUrl, cookies: cookies);
 
       String bCover = "https://cf.mhgui.com/cpic/g/$comicId.jpg";
-      String lastRead =
-          "${DateTime.now().year}.${DateTime.now().month}.${DateTime.now().day} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')}";
 
-      String favoriteItem =
-          '漫畫: $comicName, ID: $comicId, Cover: $bCover, URL: $finalUrl, Chapter: $comicChapter, Page: $comicPage, LastRead: $lastRead, Genres: $genres';
-      saveFavorite(favoriteItem);
+      await _favoritesManager.addComicToFavorite(
+          comicId, comicName, finalUrl, bCover, comicChapter, comicPage,
+          genres: genres);
+
+      setState(() {
+        _addedToFavorite = true;
+      });
+      print("已加入收藏清單");
     } else {
       print("當前不是漫畫頁面");
     }
@@ -353,36 +353,29 @@ class WebViewExampleState extends State<WebViewExample> {
     }
   }
 
-  Future<void> saveFavorite(String favoriteItem) async {
-    await _favoritesManager.addFavorite(favoriteItem);
-    setState(() {
-      _addedToFavorite = true;
-    });
-    print("已加入收藏清單");
-  }
-
-  Future<void> updateFavorite(int index, String favoriteItem) async {
-    await _favoritesManager.updateFavorite(index, favoriteItem);
+  Future<void> updateFavorite(FavoriteComic comic) async {
+    await _favoritesManager.updateFavorite(comic);
     setState(() {});
   }
 
-  Future<void> removeFavorite(String favoriteItem) async {
-    await _favoritesManager.removeFavorite(favoriteItem);
+  Future<void> removeFavorite(String comicId) async {
+    await _favoritesManager.removeFavorite(comicId);
     setState(() {
       _addedToFavorite = false;
     });
   }
 
-  Future<List<String>> getFavorites() async {
+  Future<List<FavoriteComic>> getFavorites() async {
     return _favoritesManager.cachedFavorites;
   }
 
   void loadingScreen(int loadingType, int delay) {
     setState(() => _isLoadingChapter = loadingType);
-    Future.delayed(Duration(milliseconds: delay), () {
-      setState(() => _isLoadingChapter = 0);
-      if (loadingType == 2) _controller.clearCache();
-    });
+    if (loadingType == 2) _controller.clearCache();
+    // Future.delayed(Duration(milliseconds: delay), () {
+    //   setState(() => _isLoadingChapter = 0);
+    //   if (loadingType == 2) _controller.clearCache();
+    // });
   }
 
   @override
@@ -445,6 +438,11 @@ class WebViewExampleState extends State<WebViewExample> {
         onUrlChange: (change) async {
           String? url = await _controller.currentUrl();
           if (url != null && comicPattern.hasMatch(url)) {
+            // Turn off loading screen when URL changes (new chapter loaded)
+            if (_isLoadingChapter != 0) {
+              setState(() => _isLoadingChapter = 0);
+            }
+
             try {
               Object? page = await _controller.runJavaScriptReturningResult('''
                 document.querySelector('.manga-page').textContent;
@@ -464,7 +462,7 @@ class WebViewExampleState extends State<WebViewExample> {
                 var match = comicPattern.firstMatch(url);
                 String comicId = match!.group(1)!;
                 String pageNum = currentPage.split('/').first;
-                await _favoritesManager.updateFavoriteProgress(
+                await _favoritesManager.updateFavoriteProgressData(
                     comicId, currentComicChap, pageNum, url);
               }
             } catch (e) {
@@ -493,6 +491,7 @@ class WebViewExampleState extends State<WebViewExample> {
           _isLoadingChapter = 0;
           _adBlocker.injectAdBlockingCSS(_controller);
           _adBlocker.hideAds(_controller);
+          if (comicPattern.hasMatch(url)) _adBlocker.showMangaBoxOnly(_controller);
         },
         onPageFinished: (url) async {
           String? title = await _controller.getTitle();
@@ -516,7 +515,6 @@ class WebViewExampleState extends State<WebViewExample> {
             if (comicPattern.hasMatch(url)) {
               var match = comicPattern.firstMatch(url);
               String comicId = match!.group(1)!;
-
               try {
                 Object? page =
                     await _controller.runJavaScriptReturningResult('''
@@ -535,7 +533,7 @@ class WebViewExampleState extends State<WebViewExample> {
                   }
                 }
 
-                await _favoritesManager.updateFavoriteProgress(
+                await _favoritesManager.updateFavoriteProgressData(
                     comicId, chap, pageNum, url);
                 if (mounted) setState(() {});
               } catch (e) {
@@ -617,6 +615,53 @@ class WebViewExampleState extends State<WebViewExample> {
     );
 
     overlayState.insert(overlayEntry);
+  }
+
+  Future<void> _simulateNewChapter() async {
+    if (_favoritesManager.cachedFavorites.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No favorites to test with!')),
+      );
+      return;
+    }
+
+    FavoriteComic target = _favoritesManager.cachedFavorites.first;
+    // Remove the last chapter to simulate a new one appearing
+    List<String> reducedTitles = List.from(target.chapterTitles);
+    if (reducedTitles.isNotEmpty) {
+      reducedTitles.removeAt(0); // Remove the newest chapter
+    }
+
+    FavoriteComic modified = target.copyWith(
+      chapterTitles: reducedTitles,
+      chapterCount: reducedTitles.length,
+    );
+
+    // Update DB with "old" data
+    await _favoritesManager.updateFavorite(modified);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text(
+              'Simulated old state for ${target.title}. Checking for updates...')),
+    );
+
+    // Trigger check
+    await _favoritesManager.checkAllFavoritesForNewChapters(
+      cookies: _cookies,
+      onComicRefreshStateChange: (id, refreshing) {
+        if (mounted) setState(() {});
+      },
+    );
+
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Check complete. Should see new chapter badge for ${target.title}')),
+      );
+    }
   }
 
   Widget _buildCategorySelector() {
@@ -795,7 +840,7 @@ class WebViewExampleState extends State<WebViewExample> {
           if (!isOpened) {
             setState(() => _canDeleteIndex = null);
           } else {
-            setState(() => _scrollingDown = false);
+            setState(() => _isAppBarVisible = false);
           }
         },
         drawer: Drawer(
@@ -817,17 +862,28 @@ class WebViewExampleState extends State<WebViewExample> {
                       child: favoriteListWidget(context),
                     ),
                   ),
-                  SizedBox(
-                    width: double.infinity,
-                    child: IconButton(
-                      onPressed: () async {
-                        _controller
-                            .loadRequest(Uri.parse('https://m.manhuagui.com'));
-                        Scaffold.of(context).closeDrawer();
-                      },
-                      icon:
-                          const Icon(Icons.home, color: Colors.white, size: 35),
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        onPressed: () async {
+                          _controller.loadRequest(
+                              Uri.parse('https://m.manhuagui.com'));
+                          Scaffold.of(context).closeDrawer();
+                        },
+                        icon: const Icon(Icons.home,
+                            color: Colors.white, size: 35),
+                      ),
+                      (kDebugMode)
+                          ? IconButton(
+                              onPressed: () async {
+                                await _simulateNewChapter();
+                              },
+                              icon: const Icon(Icons.bug_report,
+                                  color: Colors.red, size: 35),
+                            )
+                          : const SizedBox(),
+                    ],
                   ),
                 ],
               ),
@@ -837,67 +893,111 @@ class WebViewExampleState extends State<WebViewExample> {
         body: Stack(
           children: [
             SafeArea(
-              child: WebViewWidget(
-                  controller: _controller,
-                  gestureRecognizers: Set()
-                    ..add(Factory<AllowVerticalDragGestureRecognizer>(
-                        () => AllowVerticalDragGestureRecognizer()
-                          ..onUpdate = (DragUpdateDetails details) {
-                            if (details.delta.dy > 0 &&
-                                _scrollingDown == false &&
-                                details.primaryDelta! > 15) {
-                              setState(() => _scrollingDown = true);
-                            } else if (details.delta.dy < 0 &&
-                                details.primaryDelta! < -15) {
-                              setState(() => _scrollingDown = false);
-                            }
-                          }))
-                    ..add(Factory<AllowHorizontalDragGestureRecognizer>(() {
-                      final recognizer = AllowHorizontalDragGestureRecognizer();
-                      recognizer.onStart = _handleHorizontalDragStart;
-                      recognizer.onUpdate = _handleHorizontalDragUpdate;
-                      recognizer.onEnd = _handleHorizontalDragEnd;
-                      recognizer.onCancel = _handleHorizontalDragCancel;
-                      recognizer.minFlingDistance = _horizontalSwipeThreshold;
-                      return recognizer;
-                    }))
-                    ..add(Factory<AllowTapGestureRecognizer>(
-                        () => AllowTapGestureRecognizer()
-                          ..onTap = () async {
-                            if (comicPattern.hasMatch(currentUrl)) {
-                              int? pPage =
-                                  int.tryParse(currentPage.split('/')[0]) ?? 1;
-                              int? lPage = _totalPages;
-
-                              Future.delayed(const Duration(milliseconds: 50),
-                                  () async {
-                                String? u = await _controller.currentUrl();
-                                var p = RegExp(r"#p=(\d+)")
-                                        .firstMatch(u!)
-                                        ?.group(1) ??
-                                    1;
-                                int? cPage = int.tryParse(p.toString());
-
-                                if (cPage == null) {
-                                  return;
+              child: Stack(
+                children: [
+                  WebViewWidget(
+                      controller: _controller,
+                      gestureRecognizers: Set()
+                        ..add(Factory<AllowVerticalDragGestureRecognizer>(
+                            () => AllowVerticalDragGestureRecognizer()
+                              ..onUpdate = (DragUpdateDetails details) {
+                                // Swipe Down (dy > 0) -> Show AppBar
+                                if (details.delta.dy > 0 &&
+                                    !_isAppBarVisible &&
+                                    details.primaryDelta! > 5) {
+                                  setState(() => _isAppBarVisible = true);
                                 }
-
-                                if (cPage == 1 && pPage == 1) {
-                                  await _triggerSwipeNavigation(toNext: false);
-                                } else if (pPage == lPage && cPage == pPage) {
-                                  await _triggerSwipeNavigation(toNext: true);
+                                // Swipe Up (dy < 0) -> Hide AppBar
+                                else if (details.delta.dy < 0 &&
+                                    _isAppBarVisible &&
+                                    details.primaryDelta! < -5) {
+                                  setState(() => _isAppBarVisible = false);
                                 }
-                              });
-                            }
-                            setState(() {
-                              _scrollingDown = false;
-                              _listPageSelector = false;
-                            });
-                          }))),
+                              }))
+                        ..add(Factory<AllowHorizontalDragGestureRecognizer>(() {
+                          final recognizer =
+                              AllowHorizontalDragGestureRecognizer();
+                          recognizer.onStart = _handleHorizontalDragStart;
+                          recognizer.onUpdate = _handleHorizontalDragUpdate;
+                          recognizer.onEnd = _handleHorizontalDragEnd;
+                          recognizer.onCancel = _handleHorizontalDragCancel;
+                          recognizer.minFlingDistance =
+                              _horizontalSwipeThreshold;
+                          return recognizer;
+                        }))
+                        ..add(Factory<AllowTapGestureRecognizer>(
+                            () => AllowTapGestureRecognizer()
+                              ..onTap = () async {
+                                if (comicPattern.hasMatch(currentUrl)) {
+                                  int? pPage =
+                                      int.tryParse(currentPage.split('/')[0]) ??
+                                          1;
+                                  int? lPage = _totalPages;
+
+                                  Future.delayed(
+                                      const Duration(milliseconds: 50),
+                                      () async {
+                                    String? u = await _controller.currentUrl();
+                                    var p = RegExp(r"#p=(\d+)")
+                                            .firstMatch(u!)
+                                            ?.group(1) ??
+                                        1;
+                                    int? cPage = int.tryParse(p.toString());
+
+                                    if (cPage == null) {
+                                      return;
+                                    }
+
+                                    if (cPage == 1 && pPage == 1) {
+                                      await _triggerSwipeNavigation(
+                                          toNext: false);
+                                    } else if (pPage == lPage &&
+                                        cPage == pPage) {
+                                      await _triggerSwipeNavigation(
+                                          toNext: true);
+                                    }
+                                  });
+                                }
+                                setState(() {
+                                  _isAppBarVisible = false;
+                                  _listPageSelector = false;
+                                });
+                              }))),
+                  if (_isLoadingChapter != 0)
+                    Positioned.fill(
+                        child: GestureDetector(
+                            onVerticalDragUpdate: (details) {
+                              // Swipe Down (dy > 0) -> Show AppBar
+                              if (details.delta.dy > 0 &&
+                                  !_isAppBarVisible &&
+                                  details.primaryDelta! > 5) {
+                                setState(() => _isAppBarVisible = true);
+                              }
+                              // Swipe Up (dy < 0) -> Hide AppBar
+                              else if (details.delta.dy < 0 &&
+                                  _isAppBarVisible &&
+                                  details.primaryDelta! < -5) {
+                                setState(() => _isAppBarVisible = false);
+                              }
+                            },
+                            child: Container(
+                                alignment: Alignment.center,
+                                color: Colors.black.withOpacity(0.4),
+                                child: Text(
+                                  _isLoadingChapter == 1
+                                      ? "正在載入上一章"
+                                      : "正在載入下一章",
+                                  style: const TextStyle(
+                                      fontSize: 24,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white),
+                                )))),
+                ],
+              ),
             ),
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
-              top: _scrollingDown ? 0 : -100,
+              top: _isAppBarVisible ? 0 : -100,
               left: 0,
               right: 0,
               child: Container(
@@ -1158,20 +1258,6 @@ class WebViewExampleState extends State<WebViewExample> {
                         },
                       )
                     : const SizedBox.shrink()),
-            Positioned.fill(
-                child: _isLoadingChapter == 0
-                    ? const SizedBox.shrink()
-                    : Container(
-                        alignment: Alignment.center,
-                        color: Colors.black.withOpacity(0.4),
-                        child: Text(
-                          _isLoadingChapter == 1 ? "正在載入上一章" : "正在載入下一章",
-                          style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                        ),
-                      ))
           ],
         ),
       ),
@@ -1188,8 +1274,9 @@ class WebViewExampleState extends State<WebViewExample> {
           child: Text("沒有收藏的漫畫😢", style: TextStyle(color: Colors.white)));
     }
 
-    List<String> filteredFavorites = _favoritesManager.filterFavoritesByGenre(
-        _favoritesManager.cachedFavorites, _selectedGenreFilter);
+    List<FavoriteComic> filteredFavorites =
+        _favoritesManager.filterFavoritesByGenre(
+            _favoritesManager.cachedFavorites, _selectedGenreFilter);
 
     return Stack(
       children: [
@@ -1224,7 +1311,6 @@ class WebViewExampleState extends State<WebViewExample> {
                                 _isRefreshingGenres = true;
                                 _checkedComicIds.clear();
                               });
-                              print('🗂️ Category sync pressed!');
                               try {
                                 String? cookies;
                                 try {
@@ -1304,7 +1390,6 @@ class WebViewExampleState extends State<WebViewExample> {
                                 _isRefreshingChapters = true;
                                 _checkedComicIds.clear();
                               });
-                              print('🔄 Refresh button pressed!');
                               try {
                                 String? cookies;
                                 try {
@@ -1377,10 +1462,8 @@ class WebViewExampleState extends State<WebViewExample> {
                     const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
                 itemCount: filteredFavorites.length,
                 itemBuilder: (context, index) {
-                  String comicId = RegExp(r'ID: (\w+)')
-                          .firstMatch(filteredFavorites[index])
-                          ?.group(1) ??
-                      'unknown_$index';
+                  FavoriteComic comic = filteredFavorites[index];
+                  String comicId = comic.id;
 
                   bool isRefreshing = _refreshingComicIds.contains(comicId);
                   bool isBlocked =
@@ -1389,7 +1472,7 @@ class WebViewExampleState extends State<WebViewExample> {
 
                   return FavoriteListItem(
                     key: ValueKey(comicId),
-                    favorite: filteredFavorites[index],
+                    favorite: comic,
                     index: index,
                     canDeleteIndex: _canDeleteIndex,
                     cookies: _cookies,
@@ -1401,42 +1484,40 @@ class WebViewExampleState extends State<WebViewExample> {
                       });
                     },
                     onDelete: (favorite) {
-                      removeFavorite(favorite);
+                      removeFavorite(favorite.id);
                       setState(() => _addedToFavorite = false);
                     },
-                    onTap: (favorite, comicId, hasNew, lastChapter,
-                        totalChapters) async {
+                    onTap: (favorite, hasNew, totalChapters) async {
                       final navigator = Navigator.of(context);
-                      if (comicId.isNotEmpty) {
-                        await _favoritesManager.recordFavoriteVisit(comicId);
+                      if (favorite.id.isNotEmpty) {
+                        await _favoritesManager
+                            .recordFavoriteVisit(favorite.id);
                       }
                       if (!mounted) {
                         return;
                       }
 
-                      String url = RegExp(r'URL: (https?://[^,]+)')
-                          .firstMatch(favorite)!
-                          .group(1)!;
+                      String url = favorite.url;
 
-                      if (hasNew && comicId.isNotEmpty) {
+                      if (hasNew && favorite.id.isNotEmpty) {
                         if (totalChapters > 0) {
                           await _favoritesManager.setLastTotalChapters(
-                              comicId, totalChapters);
+                              favorite.id, totalChapters);
                         }
 
                         setState(() {
-                          _favoritesManager.clearNewChapterCount(comicId);
+                          _favoritesManager.clearNewChapterCount(favorite.id);
                         });
                       } else {
                         if (totalChapters > 0) {
                           await _favoritesManager.setLastTotalChapters(
-                              comicId, totalChapters);
+                              favorite.id, totalChapters);
                         }
                       }
 
                       _controller.loadRequest(Uri.parse(url));
                       navigator.pop();
-                      setState(() => _scrollingDown = false);
+                      setState(() => _isAppBarVisible = false);
                     },
                   );
                 },

@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
 import '../managers/favorites_manager.dart';
+import '../models/favorite_comic.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../constants/network_constants.dart';
 
 class FavoriteListItem extends StatefulWidget {
-  final String favorite;
+  final FavoriteComic favorite;
   final int index;
   final int? canDeleteIndex;
   final Function(int) onLongPress;
-  final Function(String) onDelete;
-  final Function(String, String, bool, String, int)? onTap;
+  final Function(FavoriteComic) onDelete;
+  final Function(FavoriteComic, bool, int)? onTap;
   final String? cookies;
   final bool isRefreshing;
   final bool isBlocked;
@@ -39,39 +40,25 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
   @override
   void initState() {
     super.initState();
-    String comicId =
-        RegExp(r'ID: (\w+)').firstMatch(widget.favorite)?.group(1) ?? '';
-    if (comicId.isNotEmpty) {
-      _checkWasUpToDate(comicId);
+    if (widget.favorite.id.isNotEmpty) {
+      _checkWasUpToDate(widget.favorite.id);
     }
   }
 
   Future<void> _checkWasUpToDate(String comicId) async {
     try {
-      // Use FavoritesManager cache instead of SharedPreferences directly
-      var chapterData = await FavoritesManager().getCachedChapterData(comicId);
+      List<String> titles = widget.favorite.chapterTitles;
 
-      if (chapterData != null) {
-        List<dynamic> chapters = chapterData['chapters'] ?? [];
+      if (titles.isNotEmpty) {
+        String latestChapterTitle = titles.first;
+        String favoriteChapter = widget.favorite.latestChapter;
 
-        if (chapters.isNotEmpty) {
-          // Get the latest chapter title (first in descending order list)
-          String latestChapterTitle = chapters.first['title'] ?? '';
-
-          // Get the favoriteChapter (what user last watched)
-          String favoriteChapter = RegExp(r'Chapter: ([^,]+)')
-                  .firstMatch(widget.favorite)
-                  ?.group(1) ??
-              '';
-
-          // Exact comparison - if user's chapter exactly matches latest chapter, show gray border
-          if (mounted &&
-              favoriteChapter.isNotEmpty &&
-              latestChapterTitle == favoriteChapter) {
-            setState(() {
-              wasUpToDate = true;
-            });
-          }
+        if (mounted &&
+            favoriteChapter.isNotEmpty &&
+            latestChapterTitle == favoriteChapter) {
+          setState(() {
+            wasUpToDate = true;
+          });
         }
       }
     } catch (e) {
@@ -82,36 +69,22 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
   Future<int> _calculateRemainingChapters(
       String comicId, String favoriteChapter) async {
     try {
-      var chapterData = await FavoritesManager().getCachedChapterData(comicId);
+      List<String> titles = widget.favorite.chapterTitles;
+      if (titles.isEmpty) return 0;
 
-      if (chapterData != null) {
-        List<dynamic> chapters = chapterData['chapters'] ?? [];
-
-        if (chapters.isNotEmpty && favoriteChapter.isNotEmpty) {
-          debugPrint('Checking remaining for $comicId. Favorite: "$favoriteChapter". Total Chapters: ${chapters.length}');
-
-          // Find user's current chapter position in the list
-          int userPosition = -1;
-          for (int i = 0; i < chapters.length; i++) {
-            String chapterTitle = chapters[i]['title'] ?? '';
-            if (chapterTitle.contains(favoriteChapter) ||
-                favoriteChapter.contains(chapterTitle)) {
-              userPosition = i;
-              debugPrint('Found match at index $i: "$chapterTitle"');
-              break;
-            }
-          }
-
-          // Calculate remaining chapters (chapters before user's position since list is descending)
-          if (userPosition > 0) {
-            debugPrint('Remaining count: $userPosition');
-            return userPosition; // Number of chapters before current position
-          } else if (userPosition == 0) {
-            debugPrint('User is at the latest chapter.');
-          } else {
-            debugPrint('No match found for "$favoriteChapter" in chapter list.');
-          }
+      // Find the index of the favorite chapter
+      int userPosition = -1;
+      for (int i = 0; i < titles.length; i++) {
+        String chapterTitle = titles[i];
+        if (chapterTitle.contains(favoriteChapter) ||
+            favoriteChapter.contains(chapterTitle)) {
+          userPosition = i;
+          break;
         }
+      }
+
+      if (userPosition != -1) {
+        return userPosition;
       }
     } catch (e) {
       debugPrint('Error calculating remaining chapters: $e');
@@ -123,26 +96,15 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
 
   @override
   Widget build(BuildContext context) {
-    String favoriteName =
-        RegExp(r'漫畫: ([^,]+)').firstMatch(widget.favorite)?.group(1) ??
-            "Undefine";
-    String favoriteChapter =
-        RegExp(r'Chapter: ([^,]+)').firstMatch(widget.favorite)?.group(1) ??
-            "Undefine";
-    String favoritePage =
-        RegExp(r'Page: ([^,]+)').firstMatch(widget.favorite)?.group(1) ??
-            "Undefine";
-    String favoriteCover = RegExp(r'Cover: (https?://[^\s]+)')
-            .firstMatch(widget.favorite)
-            ?.group(1) ??
-        "Unknow";
-    String comicId =
-        RegExp(r'ID: (\w+)').firstMatch(widget.favorite)?.group(1) ?? '';
+    String favoriteName = widget.favorite.title;
+    String favoriteChapter = widget.favorite.latestChapter;
+    String favoritePage = widget.favorite.page;
+    String favoriteCover = widget.favorite.cover;
+    String comicId = widget.favorite.id;
 
     bool hasNew = FavoritesManager().hasNewChapters(comicId);
     int newCount = FavoritesManager().getNewChapterCount(comicId);
 
-    // Calculate remaining chapters if no new updates but not caught up
     if (!hasNew && !wasUpToDate && !showRemaining && !_calculationAttempted) {
       _calculationAttempted = true;
       _calculateRemainingChapters(comicId, favoriteChapter).then((count) {
@@ -157,8 +119,6 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
       });
     }
 
-    debugPrint('Item: $favoriteName, ID: $comicId, HasNew: $hasNew, NewCount: $newCount, Remaining: $remainingCount, ShowRemaining: $showRemaining');
-
     return Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: Material(
@@ -171,17 +131,9 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
               onTap: widget.isBlocked || widget.onTap == null
                   ? null
                   : () async {
-                      // Get total chapters from cache if available
-                      int totalChapters = 0;
-                      var chapterData = await FavoritesManager()
-                          .getCachedChapterData(comicId);
-                      if (chapterData != null) {
-                        List<dynamic> chapters = chapterData['chapters'] ?? [];
-                        totalChapters = chapters.length;
-                      }
-
-                      await widget.onTap!(widget.favorite, comicId, hasNew,
-                          favoriteChapter, totalChapters);
+                      int totalChapters = widget.favorite.chapterTitles.length;
+                      await widget.onTap!(
+                          widget.favorite, hasNew, totalChapters);
                     },
               onLongPress: () {
                 widget.onLongPress(widget.index);
@@ -224,17 +176,54 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
                     ),
                   ],
                 ),
-                leading: favoriteCover != 'Unknow'
-                    ? CachedNetworkImage(
-                        imageUrl: favoriteCover,
-                        fit: BoxFit.cover,
-                        httpHeaders: NetworkConstants.defaultHeaders,
-                        placeholder: (context, url) =>
-                            const CircularProgressIndicator(strokeWidth: 2),
-                        errorWidget: (context, url, error) =>
-                            const Icon(Icons.error_outline),
-                      )
-                    : const Icon(Icons.error_outline),
+                leading: SizedBox(
+                  width: 43,
+                  height: 80,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: favoriteCover.isNotEmpty &&
+                                favoriteCover != 'Unknow'
+                            ? CachedNetworkImage(
+                                imageUrl: favoriteCover,
+                                fit: BoxFit.fitHeight,
+                                httpHeaders: NetworkConstants.defaultHeaders,
+                                placeholder: (context, url) =>
+                                    const CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                errorWidget: (context, url, error) =>
+                                    const Icon(Icons.error_outline),
+                              )
+                            : const Icon(Icons.error_outline),
+                      ),
+                      if (widget.favorite.isFinished)
+                        Positioned(
+                          bottom: 0,
+                          right: 0,
+                          left: 0,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 2, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.8),
+                              borderRadius: const BorderRadius.only(
+                                topLeft: Radius.circular(4),
+                              ),
+                            ),
+                            child: const Text(
+                              '完結',
+                              style: TextStyle(
+                                fontSize: 8,
+                                fontWeight: FontWeight.normal,
+                                color: Colors.white,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 trailing: AnimatedOpacity(
                   duration: const Duration(milliseconds: 200),
                   opacity: widget.canDeleteIndex == widget.index ? 1.0 : 0.0,
@@ -242,8 +231,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
                     duration: const Duration(milliseconds: 200),
                     scale: widget.canDeleteIndex == widget.index ? 1.0 : 0.0,
                     child: Transform.translate(
-                      offset: Offset(
-                          0, wasUpToDate ? 0 : -10), // Move 8 pixels upward
+                      offset: Offset(0, wasUpToDate ? 0 : -10),
                       child: IconButton(
                         icon: Icon(Icons.delete_forever,
                             color: Colors.red[400], size: 35),

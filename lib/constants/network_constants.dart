@@ -3,7 +3,7 @@ class NetworkConstants {
 
   static const String referer = 'https://m.manhuagui.com/';
 
-  static const Duration crawlDelay = Duration(seconds: 4);
+  static const Duration crawlDelay = Duration(milliseconds: 1400);
 
   static const Map<String, String> defaultHeaders = {
     'User-Agent': userAgent,
