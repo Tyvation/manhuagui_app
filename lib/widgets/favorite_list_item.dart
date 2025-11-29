@@ -9,8 +9,10 @@ class FavoriteListItem extends StatefulWidget {
   final int? canDeleteIndex;
   final Function(int) onLongPress;
   final Function(String) onDelete;
-  final Function(String, String, bool, String, int) onTap;
+  final Function(String, String, bool, String, int)? onTap;
   final String? cookies;
+  final bool isRefreshing;
+  final bool isBlocked;
 
   const FavoriteListItem({
     super.key,
@@ -21,6 +23,8 @@ class FavoriteListItem extends StatefulWidget {
     required this.onDelete,
     required this.onTap,
     this.cookies,
+    this.isRefreshing = false,
+    this.isBlocked = false,
   });
 
   @override
@@ -84,8 +88,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
         List<dynamic> chapters = chapterData['chapters'] ?? [];
 
         if (chapters.isNotEmpty && favoriteChapter.isNotEmpty) {
-          debugPrint(
-              'Checking remaining for $comicId. Favorite: "$favoriteChapter". Total Chapters: ${chapters.length}');
+          debugPrint('Checking remaining for $comicId. Favorite: "$favoriteChapter". Total Chapters: ${chapters.length}');
 
           // Find user's current chapter position in the list
           int userPosition = -1;
@@ -106,8 +109,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
           } else if (userPosition == 0) {
             debugPrint('User is at the latest chapter.');
           } else {
-            debugPrint(
-                'No match found for "$favoriteChapter" in chapter list.');
+            debugPrint('No match found for "$favoriteChapter" in chapter list.');
           }
         }
       }
@@ -155,8 +157,7 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
       });
     }
 
-    debugPrint(
-        'Item: $favoriteName, ID: $comicId, HasNew: $hasNew, NewCount: $newCount, Remaining: $remainingCount, ShowRemaining: $showRemaining');
+    debugPrint('Item: $favoriteName, ID: $comicId, HasNew: $hasNew, NewCount: $newCount, Remaining: $remainingCount, ShowRemaining: $showRemaining');
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 5),
@@ -167,19 +168,21 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
             InkWell(
               borderRadius: BorderRadius.circular(10),
               splashColor: Colors.blue[400],
-              onTap: () async {
-                // Get total chapters from cache if available
-                int totalChapters = 0;
-                var chapterData =
-                    await FavoritesManager().getCachedChapterData(comicId);
-                if (chapterData != null) {
-                  List<dynamic> chapters = chapterData['chapters'] ?? [];
-                  totalChapters = chapters.length;
-                }
+              onTap: widget.isBlocked || widget.onTap == null
+                  ? null
+                  : () async {
+                      // Get total chapters from cache if available
+                      int totalChapters = 0;
+                      var chapterData = await FavoritesManager()
+                          .getCachedChapterData(comicId);
+                      if (chapterData != null) {
+                        List<dynamic> chapters = chapterData['chapters'] ?? [];
+                        totalChapters = chapters.length;
+                      }
 
-                await widget.onTap(widget.favorite, comicId, hasNew,
-                    favoriteChapter, totalChapters);
-              },
+                      await widget.onTap!(widget.favorite, comicId, hasNew,
+                          favoriteChapter, totalChapters);
+                    },
               onLongPress: () {
                 widget.onLongPress(widget.index);
               },
@@ -294,6 +297,25 @@ class _FavoriteListItemState extends State<FavoriteListItem> {
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
                     ),
+                  ),
+                ),
+              ),
+            if (widget.isBlocked)
+              Positioned.fill(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    color: Colors.black
+                        .withOpacity(widget.isRefreshing ? 0.6 : 0.4),
+                    child: widget.isRefreshing
+                        ? const Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(Colors.orange),
+                            ),
+                          )
+                        : null,
                   ),
                 ),
               ),

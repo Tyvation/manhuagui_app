@@ -101,6 +101,8 @@ class WebViewExampleState extends State<WebViewExample> {
   bool _favoritesLoaded = false;
   bool _isRefreshingGenres = false;
   bool _isRefreshingChapters = false;
+  final Set<String> _refreshingComicIds = {};
+  final Set<String> _checkedComicIds = {};
   double _horizontalDragOffset = 0;
   bool _isHorizontalDragActive = false;
   bool _isSwipeNavigating = false;
@@ -420,6 +422,10 @@ class WebViewExampleState extends State<WebViewExample> {
         onWebResourceError: (WebResourceError error) {
           print(
               'WebView Error: ${error.description} (Code: ${error.errorCode})');
+          // Ignore ERR_NAME_NOT_RESOLVED (-2) as it often happens with ads or tracking scripts
+          // or invalid next-page links at the end of chapters
+          if (error.errorCode == -2) return;
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -519,9 +525,9 @@ class WebViewExampleState extends State<WebViewExample> {
                 String p = page.toString().replaceAll(RegExp(r'["]'), '');
                 String pageNum = p.split('/').first;
 
-                // Need to get chapter title if not set yet
+                // Always extract chapter from title
                 String chap = currentComicChap;
-                if (chap.isEmpty && title != null) {
+                if (title != null) {
                   int lastUnderscoreIndex = title.lastIndexOf('_');
                   if (lastUnderscoreIndex != -1) {
                     chap = title.substring(lastUnderscoreIndex + 1);
@@ -552,8 +558,6 @@ class WebViewExampleState extends State<WebViewExample> {
           });
 
           if (comicPattern.hasMatch(url)) {
-            _adBlocker.showMangaBoxOnly(_controller);
-
             try {
               Object? page = await _controller.runJavaScriptReturningResult('''
                 document.querySelector('.manga-page').textContent;
@@ -1218,6 +1222,7 @@ class WebViewExampleState extends State<WebViewExample> {
                           : () async {
                               setState(() {
                                 _isRefreshingGenres = true;
+                                _checkedComicIds.clear();
                               });
                               print('🗂️ Category sync pressed!');
                               try {
@@ -1238,7 +1243,22 @@ class WebViewExampleState extends State<WebViewExample> {
 
                                 await _favoritesManager
                                     .updateFavoritesWithGenres(
-                                        cookies: cookies);
+                                        cookies: cookies,
+                                        onComicRefreshStateChange:
+                                            (comicId, isRefreshing) {
+                                          if (mounted) {
+                                            setState(() {
+                                              if (isRefreshing) {
+                                                _refreshingComicIds
+                                                    .add(comicId);
+                                              } else {
+                                                _refreshingComicIds
+                                                    .remove(comicId);
+                                                _checkedComicIds.add(comicId);
+                                              }
+                                            });
+                                          }
+                                        });
                                 if (mounted) {
                                   _showTopNotification("已更新分類資訊");
                                   setState(() {});
@@ -1282,6 +1302,7 @@ class WebViewExampleState extends State<WebViewExample> {
                           : () async {
                               setState(() {
                                 _isRefreshingChapters = true;
+                                _checkedComicIds.clear();
                               });
                               print('🔄 Refresh button pressed!');
                               try {
@@ -1302,7 +1323,22 @@ class WebViewExampleState extends State<WebViewExample> {
 
                                 await _favoritesManager
                                     .checkAllFavoritesForNewChapters(
-                                        cookies: cookies);
+                                        cookies: cookies,
+                                        onComicRefreshStateChange:
+                                            (comicId, isRefreshing) {
+                                          if (mounted) {
+                                            setState(() {
+                                              if (isRefreshing) {
+                                                _refreshingComicIds
+                                                    .add(comicId);
+                                              } else {
+                                                _refreshingComicIds
+                                                    .remove(comicId);
+                                                _checkedComicIds.add(comicId);
+                                              }
+                                            });
+                                          }
+                                        });
 
                                 if (mounted) {
                                   int newCount =
@@ -1345,12 +1381,20 @@ class WebViewExampleState extends State<WebViewExample> {
                           .firstMatch(filteredFavorites[index])
                           ?.group(1) ??
                       'unknown_$index';
+
+                  bool isRefreshing = _refreshingComicIds.contains(comicId);
+                  bool isBlocked =
+                      (_isRefreshingChapters || _isRefreshingGenres) &&
+                          !_checkedComicIds.contains(comicId);
+
                   return FavoriteListItem(
                     key: ValueKey(comicId),
                     favorite: filteredFavorites[index],
                     index: index,
                     canDeleteIndex: _canDeleteIndex,
                     cookies: _cookies,
+                    isRefreshing: isRefreshing,
+                    isBlocked: isBlocked,
                     onLongPress: (idx) {
                       setState(() {
                         _canDeleteIndex = _canDeleteIndex == idx ? null : idx;
@@ -1400,31 +1444,6 @@ class WebViewExampleState extends State<WebViewExample> {
             ),
           ],
         ),
-        if (_isRefreshingGenres || _isRefreshingChapters)
-          Container(
-            color: Colors.black.withOpacity(0.5),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      _isRefreshingGenres ? Colors.green : Colors.orange,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    _isRefreshingGenres ? "更新分類中..." : "檢查收藏更新...",
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
       ],
     );
   }

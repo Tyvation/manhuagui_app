@@ -7,8 +7,7 @@ class AdBlocker {
 
   Future<void> loadJsFiles() async {
     _adblockerJS = await rootBundle.loadString('lib/assets/adblocker.js');
-    _hideOtherAreaJS =
-        await rootBundle.loadString('lib/assets/hideOtherArea.js');
+    _hideOtherAreaJS = await rootBundle.loadString('lib/assets/hideOtherArea.js');
   }
 
   Future<void> injectAdBlockingCSS(WebViewController controller) async {

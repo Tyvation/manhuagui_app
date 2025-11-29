@@ -91,13 +91,18 @@ class FavoritesManager {
     _cachedAvailableGenres = sortedGenres;
   }
 
-  Future<void> updateFavoritesWithGenres({String? cookies}) async {
+  Future<void> updateFavoritesWithGenres(
+      {String? cookies,
+      Function(String comicId, bool isRefreshing)?
+          onComicRefreshStateChange}) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     List<String> favorites = prefs.getStringList('favorites') ?? [];
     List<String> updatedFavorites = [];
     Set<String> allGenres = {};
 
     for (String favorite in favorites) {
+      String comicId =
+          RegExp(r'ID: (\d+)').firstMatch(favorite)?.group(1) ?? '';
       if (favorite.contains('Genres:')) {
         String genres =
             RegExp(r'Genres: ([^,]*)').firstMatch(favorite)?.group(1) ?? '';
@@ -105,12 +110,20 @@ class FavoritesManager {
           allGenres.addAll(genres.split(',').where((g) => g.isNotEmpty));
         }
         updatedFavorites.add(favorite);
+        // Mark as processed immediately
+        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
+          onComicRefreshStateChange(comicId, false);
+        }
         continue;
       }
 
       String url =
           RegExp(r'URL: (https?://[^,]+)').firstMatch(favorite)?.group(1) ?? '';
       if (url.isNotEmpty) {
+        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
+          onComicRefreshStateChange(comicId, true);
+        }
+
         String genres =
             await ChapterFetcher.extractComicGenres(url, cookies: cookies);
         if (genres.isNotEmpty) {
@@ -119,10 +132,17 @@ class FavoritesManager {
         } else {
           updatedFavorites.add(favorite);
         }
+
+        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
+          onComicRefreshStateChange(comicId, false);
+        }
         // Add delay to prevent IP blocking (rate limiting)
         await Future.delayed(NetworkConstants.crawlDelay);
       } else {
         updatedFavorites.add(favorite);
+        if (onComicRefreshStateChange != null && comicId.isNotEmpty) {
+          onComicRefreshStateChange(comicId, false);
+        }
       }
     }
 
@@ -162,14 +182,23 @@ class FavoritesManager {
     await prefs.setString('chapters_$comicId', jsonEncode(data));
   }
 
-  Future<void> checkAllFavoritesForNewChapters({String? cookies}) async {
+  Future<void> checkAllFavoritesForNewChapters({
+    String? cookies,
+    Function(String comicId, bool isRefreshing)? onComicRefreshStateChange,
+  }) async {
     _newChapterCounts.clear();
     for (String favorite in _cachedFavorites) {
       String comicId =
           RegExp(r'ID: (\w+)').firstMatch(favorite)?.group(1) ?? '';
       if (comicId.isNotEmpty) {
+        if (onComicRefreshStateChange != null) {
+          onComicRefreshStateChange(comicId, true);
+        }
         await _checkSingleComicForNewChapters(comicId, favorite,
             cookies: cookies);
+        if (onComicRefreshStateChange != null) {
+          onComicRefreshStateChange(comicId, false);
+        }
         // Add delay to prevent IP blocking (rate limiting)
         await Future.delayed(NetworkConstants.crawlDelay);
       }
